@@ -7,6 +7,14 @@
   "bin": {
     "outlook-mcp-hardened": "dist/index.js"
   },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.json",
+    "!dist/__tests__",
+    "LICENSE",
+    "README.md",
+    "SECURITY.md"
+  ],
   "scripts": {
     "generate": "node bin/generate-graph-client.mjs",
     "build": "tsup",

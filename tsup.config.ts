@@ -1,7 +1,7 @@
 import { defineConfig } from 'tsup';
 
 export default defineConfig({
-  entry: ['src/**/*.ts', 'src/endpoints.json'],
+  entry: ['src/**/*.ts', '!src/**/*.test.ts', '!src/__tests__/**', 'src/endpoints.json'],
   format: ['esm'],
   target: 'es2020',
   outDir: 'dist',
@@ -22,8 +22,8 @@ export default defineConfig({
     'commander',
     'dotenv',
     'express',
-    'js-yaml',
     'keytar',
+    'open',
     'winston',
     'zod',
   ],
