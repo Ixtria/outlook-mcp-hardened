@@ -1,6 +1,12 @@
 #!/usr/bin/env node
 
 import 'dotenv/config';
+// HARDENED: install the egress guard before any other module that might
+// issue a fetch. Any import that triggers a network call now must target
+// an allowlisted host or the process crashes at boot.
+import { installEgressGuard } from './security/index.js';
+installEgressGuard();
+
 import { parseArgs } from './cli.js';
 import logger from './logger.js';
 import AuthManager, { buildScopesFromEndpoints } from './auth.js';
@@ -16,7 +22,20 @@ async function main(): Promise<void> {
       logger.info('Organization mode enabled - including work account scopes');
     }
 
-    const scopes = buildScopesFromEndpoints(includeWorkScopes, args.enabledTools);
+    // HARDENED: read-first — write scopes are requested only when the
+    // operator opts in. Default is read-only.
+    const writePolicy = {
+      mail: !!args.enableSend,
+      calendar: !!args.enableWrite,
+    };
+    const scopes = buildScopesFromEndpoints(includeWorkScopes, args.enabledTools, writePolicy);
+    if (writePolicy.mail || writePolicy.calendar) {
+      logger.info(
+        `Read-first override — mail writes: ${writePolicy.mail}, calendar writes: ${writePolicy.calendar}`
+      );
+    } else {
+      logger.info('Read-only mode (default). Pass --enable-send or --enable-write to opt in.');
+    }
     const authManager = await AuthManager.create(scopes);
     await authManager.loadTokenCache();
 

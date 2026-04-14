@@ -1,10 +1,11 @@
 import logger from './logger.js';
 import AuthManager from './auth.js';
 import { refreshAccessToken } from './lib/microsoft-auth.js';
-import { encode as toonEncode } from '@toon-format/toon';
+// HARDENED: @toon-format/toon removed — only JSON output in this fork.
 import type { AppSecrets } from './secrets.js';
 import { getCloudEndpoints } from './cloud-config.js';
 import { getRequestTokens } from './request-context.js';
+import { auditLog } from './security/audit-logger.js';
 
 interface GraphRequestOptions {
   headers?: Record<string, string>;
@@ -15,6 +16,8 @@ interface GraphRequestOptions {
   excludeResponse?: boolean;
   accessToken?: string;
   refreshToken?: string;
+  /** HARDENED: tool alias for the audit trail. Passed by graph-tools. */
+  _toolName?: string;
 
   [key: string]: unknown;
 }
@@ -37,16 +40,10 @@ interface McpResponse {
 class GraphClient {
   private authManager: AuthManager;
   private secrets: AppSecrets;
-  private readonly outputFormat: 'json' | 'toon' = 'json';
 
-  constructor(
-    authManager: AuthManager,
-    secrets: AppSecrets,
-    outputFormat: 'json' | 'toon' = 'json'
-  ) {
+  constructor(authManager: AuthManager, secrets: AppSecrets) {
     this.authManager = authManager;
     this.secrets = secrets;
-    this.outputFormat = outputFormat;
   }
 
   async makeRequest(endpoint: string, options: GraphRequestOptions = {}): Promise<unknown> {
@@ -173,32 +170,41 @@ class GraphClient {
     });
   }
 
-  private serializeData(data: unknown, outputFormat: 'json' | 'toon', pretty = false): string {
-    if (outputFormat === 'toon') {
-      try {
-        return toonEncode(data);
-      } catch (error) {
-        logger.warn(`Failed to encode as TOON, falling back to JSON: ${error}`);
-        return JSON.stringify(data, null, pretty ? 2 : undefined);
-      }
-    }
+  private serializeData(data: unknown, pretty = false): string {
     return JSON.stringify(data, null, pretty ? 2 : undefined);
   }
 
   async graphRequest(endpoint: string, options: GraphRequestOptions = {}): Promise<McpResponse> {
+    // HARDENED: capture timing + status for the audit trail. We emit one
+    // line per call whether it succeeded or failed.
+    const startedAt = Date.now();
+    let status = 0;
     try {
       logger.info(`Calling ${endpoint} with options: ${JSON.stringify(options)}`);
 
       // Use new OAuth-aware request method
       const result = await this.makeRequest(endpoint, options);
+      status = 200;
 
       return this.formatJsonResponse(result, options.rawResponse, options.excludeResponse);
     } catch (error) {
       logger.error(`Error in Graph API request: ${error}`);
+      const match = (error as Error).message.match(/Microsoft Graph API[^:]*:\s*(\d{3})/);
+      status = match?.[1] ? parseInt(match[1], 10) : 0;
       return {
         content: [{ type: 'text', text: JSON.stringify({ error: (error as Error).message }) }],
         isError: true,
       };
+    } finally {
+      auditLog({
+        tool: options._toolName ?? 'unknown',
+        method: (options.method ?? 'GET').toUpperCase(),
+        path: endpoint,
+        scopes: [...this.authManager.getScopes()],
+        account: this.authManager.getSelectedAccountId(),
+        status,
+        duration_ms: Date.now() - startedAt,
+      });
     }
   }
 
@@ -206,7 +212,7 @@ class GraphClient {
     // If excludeResponse is true, only return success indication
     if (excludeResponse) {
       return {
-        content: [{ type: 'text', text: this.serializeData({ success: true }, this.outputFormat) }],
+        content: [{ type: 'text', text: this.serializeData({ success: true }) }],
       };
     }
 
@@ -229,7 +235,7 @@ class GraphClient {
       if (rawResponse) {
         return {
           content: [
-            { type: 'text', text: this.serializeData(responseData.data, this.outputFormat) },
+            { type: 'text', text: this.serializeData(responseData.data) },
           ],
           _meta: meta,
         };
@@ -238,7 +244,7 @@ class GraphClient {
       if (responseData.data === null || responseData.data === undefined) {
         return {
           content: [
-            { type: 'text', text: this.serializeData({ success: true }, this.outputFormat) },
+            { type: 'text', text: this.serializeData({ success: true }) },
           ],
           _meta: meta,
         };
@@ -261,7 +267,7 @@ class GraphClient {
 
       return {
         content: [
-          { type: 'text', text: this.serializeData(responseData.data, this.outputFormat, true) },
+          { type: 'text', text: this.serializeData(responseData.data, true) },
         ],
         _meta: meta,
       };
@@ -270,13 +276,13 @@ class GraphClient {
     // Original handling for backward compatibility
     if (rawResponse) {
       return {
-        content: [{ type: 'text', text: this.serializeData(data, this.outputFormat) }],
+        content: [{ type: 'text', text: this.serializeData(data) }],
       };
     }
 
     if (data === null || data === undefined) {
       return {
-        content: [{ type: 'text', text: this.serializeData({ success: true }, this.outputFormat) }],
+        content: [{ type: 'text', text: this.serializeData({ success: true }) }],
       };
     }
 
@@ -296,7 +302,7 @@ class GraphClient {
     removeODataProps(data as Record<string, unknown>);
 
     return {
-      content: [{ type: 'text', text: this.serializeData(data, this.outputFormat, true) }],
+      content: [{ type: 'text', text: this.serializeData(data, true) }],
     };
   }
 }

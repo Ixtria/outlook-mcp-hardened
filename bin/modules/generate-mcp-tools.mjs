@@ -26,7 +26,18 @@ export function generateMcpTools(openApiSpec, outputDir) {
     console.log(`Generated client code at: ${clientFilePath}`);
 
     let clientCode = fs.readFileSync(clientFilePath, 'utf-8');
-    clientCode = clientCode.replace(/'@zodios\/core';/, "'./hack.js';");
+    // HARDENED: regex tolerant of either quote style and optional whitespace.
+    // The original /'@zodios\/core';/ silently no-oped when a newer
+    // openapi-zod-client version emitted `"@zodios/core"`, which broke the
+    // typecheck in CI.
+    const zodiosImportCount = (clientCode.match(/['"]@zodios\/core['"]/g) || []).length;
+    clientCode = clientCode.replace(/['"]@zodios\/core['"]/g, "'./hack.js'");
+    if (zodiosImportCount === 0) {
+      throw new Error(
+        "generate-mcp-tools: expected at least one @zodios/core import to rewrite, found none. " +
+          "The openapi-zod-client output format may have changed — inspect client.ts."
+      );
+    }
 
     clientCode = clientCode.replace(/\.strict\(\)/g, '.passthrough()');
 

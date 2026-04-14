@@ -37,8 +37,8 @@ export function registerAuthTools(server: McpServer, authManager: AuthManager): 
                 type: 'text',
                 text: JSON.stringify({
                   status: 'Login successful',
-                  message: 'Browser authentication completed successfully.',
                   ...loginResult,
+                  message: 'Browser authentication completed successfully.',
                 }),
               },
             ],
@@ -224,6 +224,72 @@ export function registerAuthTools(server: McpServer, authManager: AuthManager): 
               type: 'text',
               text: JSON.stringify({
                 error: `Failed to remove account: ${(error as Error).message}`,
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // HARDENED: auth_status — lets the operator see exactly which scopes
+  // are active, which account is selected, and whether the current
+  // session can still acquire a token silently. Does not return the
+  // token itself.
+  server.tool(
+    'auth_status',
+    'Report active Microsoft Graph scopes, selected account, OAuth mode state, and silent-auth health. Read-only — never returns the bearer token.',
+    {},
+    {
+      title: 'auth_status',
+      readOnlyHint: true,
+      openWorldHint: false,
+    },
+    async () => {
+      try {
+        const scopes = Array.from(authManager.getScopes());
+        const selectedAccountId = authManager.getSelectedAccountId();
+        const oauthMode = authManager.isOAuthModeEnabled();
+        const currentAccount = await authManager.getCurrentAccount();
+
+        let canAcquireSilently = false;
+        if (currentAccount) {
+          try {
+            const token = await authManager.getToken();
+            canAcquireSilently = typeof token === 'string' && token.length > 0;
+          } catch {
+            canAcquireSilently = false;
+          }
+        }
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                scopes,
+                account: currentAccount
+                  ? {
+                      username: currentAccount.username,
+                      name: currentAccount.name,
+                      homeAccountId: currentAccount.homeAccountId,
+                    }
+                  : null,
+                selectedAccountId,
+                oauthMode,
+                canAcquireSilently,
+              }),
+            },
+          ],
+        };
+      } catch (error) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                error: `auth_status failed: ${(error as Error).message}`,
               }),
             },
           ],

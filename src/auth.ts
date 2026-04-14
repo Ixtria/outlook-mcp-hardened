@@ -6,6 +6,11 @@ import { fileURLToPath } from 'url';
 import path from 'path';
 import { getSecrets, type AppSecrets } from './secrets.js';
 import { getCloudEndpoints, getDefaultClientId } from './cloud-config.js';
+import {
+  READ_ONLY_POLICY,
+  isToolAllowedByPolicy,
+  type WritePolicy,
+} from './security/write-policy.js';
 
 // Ok so this is a hack to lazily import keytar only when needed
 // since --http mode may not need it at all, and keytar can be a pain to install (looking at you alpine)
@@ -140,7 +145,8 @@ const SCOPE_HIERARCHY: ScopeHierarchy = {
 
 function buildScopesFromEndpoints(
   includeWorkAccountScopes: boolean = false,
-  enabledToolsPattern?: string
+  enabledToolsPattern?: string,
+  writePolicy: WritePolicy = READ_ONLY_POLICY
 ): string[] {
   const scopesSet = new Set<string>();
 
@@ -160,6 +166,13 @@ function buildScopesFromEndpoints(
   endpoints.default.forEach((endpoint) => {
     // Skip endpoints that don't match the tool filter
     if (enabledToolsRegex && !enabledToolsRegex.test(endpoint.toolName)) {
+      return;
+    }
+
+    // HARDENED: under read-first defaults, don't request Mail.Send /
+    // Mail.ReadWrite / Calendars.ReadWrite unless the matching --enable
+    // flag is set.
+    if (!isToolAllowedByPolicy(endpoint.toolName, endpoint.method ?? 'GET', writePolicy)) {
       return;
     }
 
@@ -415,7 +428,7 @@ class AuthManager {
     }
 
     // Fall back to first account (backward compatibility)
-    return accounts[0];
+    return accounts[0] ?? null;
   }
 
   async acquireTokenByDeviceCode(hack?: (message: string) => void): Promise<string | null> {
@@ -647,6 +660,11 @@ class AuthManager {
     return this.selectedAccountId;
   }
 
+  // HARDENED: read-only view of active scopes, used by the audit logger.
+  getScopes(): readonly string[] {
+    return this.scopes;
+  }
+
   /**
    * Returns true if auth is in OAuth/HTTP mode (token supplied via env or setOAuthToken).
    * In this mode, account resolution should be skipped — the request context drives token selection.
@@ -728,7 +746,7 @@ class AuthManager {
       }
       // No identifier provided
       if (accounts.length === 1) {
-        targetAccount = accounts[0];
+        targetAccount = accounts[0] ?? null;
       } else {
         // Multiple accounts: resolve by explicit selectedAccountId only — never fall back to accounts[0].
         // getCurrentAccount() has backward-compat fallback to first account which is unsafe for multi-account routing.
@@ -747,6 +765,10 @@ class AuthManager {
           );
         }
       }
+    }
+
+    if (!targetAccount) {
+      throw new Error('No target account resolved. Please login first.');
     }
 
     const silentRequest = {
