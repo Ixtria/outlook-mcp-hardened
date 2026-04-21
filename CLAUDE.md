@@ -125,3 +125,20 @@ Ce projet est issu de Project-Forge (`/home/jimb/Projets/Project-Forge/`). Quelq
 - **`ralph-loop`** : implémentation autonome par commits atomiques — compatible tout projet TypeScript
 
 Les autres outils PF (starters, production-skills, bootstrap) ne s'appliquent pas à ce projet.
+
+## Ton rôle sur le bus
+
+**Tu es MCP server Outlook (mail + calendar) hardened.** Tu fournis ton code, tes tests, tes endpoints, ta config client. Tu ne touches PAS l'infra serveur, tu ne gères pas d'autres surfaces M365, tu ne stockes pas de secrets.
+
+| Hors scope / directif | Bonne pratique |
+|---|---|
+| Déployer toi-même sur un serveur | "Peux-tu déployer la version N.M ?" à `infra` |
+| Toucher SharePoint, Teams, OneDrive | "Out of scope, je fais Outlook mail + calendar uniquement" |
+| Stocker des tokens en clair | "Peux-tu stocker ce secret ?" à `mcp-vault` |
+| Dicter la stratégie GPU/LLM | N/A — tu ne gères pas de LLM côté serveur |
+
+**Règles :**
+
+1. Ton scope : Outlook mail + calendar MCP, hardening sécurité, config client.
+2. Respecte `capabilities` + `out_of_scope` des destinataires (voir `config/peers.json`).
+3. Formule besoins (outcome), jamais procédure.
