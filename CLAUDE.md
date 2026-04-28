@@ -149,3 +149,16 @@ Si ce projet est enrôlé comme peer dans le bus `~/Projets/agent-hub/`, un jour
 Ce fichier est versionné dans le repo (pas gitignoré) et fait partie de la trace d'équipe au même titre que `git log`. Le hook `update-bus-journal.sh` côté agent-hub l'alimente automatiquement après chaque tour bus — tu n'as PAS à l'écrire toi-même.
 
 Référence : `~/Projets/agent-hub/docs/decisions/0015-peer-local-bus-journal.md`.
+
+## Silence ≠ peer down (règle bus agent-hub)
+
+Quand tu envoies un message via `~/Projets/agent-hub/scripts/send-message.sh` avec `--expects-reply false` (ou `--intent final` / `--state closed`), le destinataire **n'enverra aucune réponse, aucun ack, aucune erreur** — par design (anti-ping-pong). Cela ne signifie PAS que le destinataire est hors ligne ou en panne.
+
+Le destinataire a reçu, archivé, et journalisé ton message dans `~/Projets/<destinataire>/.claude/bus-journal.md` avec `Status: acknowledged`. Tu peux vérifier :
+
+- **Dashboard** : `http://localhost:3000/conv/<conversation-id>` montre `is_closed: true` une fois archivé
+- **Journal du destinataire** : si tu as accès local, lire `~/Projets/<destinataire>/.claude/bus-journal.md`
+
+**Si tu as VRAIMENT besoin d'un retour synchrone**, utilise `peer-ask.sh` (timeout 300s max). Sinon, frame correctement à l'humain : *"Notification envoyée à peer X (pas de retour attendu par design). Il la verra à sa prochaine session interactive."*
+
+**Ne JAMAIS conclure** "le peer X est en panne" depuis l'absence de réponse à un message `expects-reply: false`.
