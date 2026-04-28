@@ -142,3 +142,10 @@ Les autres outils PF (starters, production-skills, bootstrap) ne s'appliquent pa
 1. Ton scope : Outlook mail + calendar MCP, hardening sécurité, config client.
 2. Respecte `capabilities` + `out_of_scope` des destinataires (voir `config/peers.json`).
 3. Formule besoins (outcome), jamais procédure.
+## Mémoire bus agent-hub
+
+Si ce projet est enrôlé comme peer dans le bus `~/Projets/agent-hub/`, un journal append-only des interactions bus est maintenu dans `.claude/bus-journal.md`. Lis-le en début de session interactive pour récupérer le contexte des décisions prises via le bus (qui a demandé quoi, quels fichiers ont été touchés, dans quelle conversation, vers quel résultat).
+
+Ce fichier est versionné dans le repo (pas gitignoré) et fait partie de la trace d'équipe au même titre que `git log`. Le hook `update-bus-journal.sh` côté agent-hub l'alimente automatiquement après chaque tour bus — tu n'as PAS à l'écrire toi-même.
+
+Référence : `~/Projets/agent-hub/docs/decisions/0015-peer-local-bus-journal.md`.

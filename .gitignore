@@ -146,8 +146,11 @@ openapi
 src/generated/client.ts
 **/.claude/settings.local.json
 
-# Claude and Serena working directories
-.claude/
+# Claude and Serena working directories — ignore everything except bus-journal.md
+# (versioned per ADR-0015, agent-hub issue #30 — peer local memory of bus interactions)
+.claude/**
+!.claude/
+!.claude/bus-journal.md
 .serena/
 
 # MCP configuration (contains sensitive keys)
