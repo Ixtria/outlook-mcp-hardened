@@ -3,6 +3,7 @@
 **Date** : 2026-05-10
 **Auteur** : Jimmy Blanquet
 **Origine** : codex finding O2 — "le plan mélange stdio et HTTP sans expliciter le seuil de garanties sécurité"
+**Mise à jour 2026-05-10 (ADR-0003)** : `http-public` est désormais **proxy OAuth vers Microsoft AAD** (Niveau B), pas un AS intégré. Les préconditions trust-proxy / TRUSTED_PROXIES / bind 127.0.0.1 restent identiques. Les préconditions AS intégré (`OAUTH_TRUST_MODE`, `OAUTH_DCR_INITIAL_TOKEN`, `JWT_PRIVATE_KEY_PASSPHRASE`, vérif `BEGIN IMMEDIATE` SQLite) sont **abandonnées** — voir ADR-0003.
 
 `outlook-mcp-hardened` peut tourner dans trois modes mutuellement exclusifs, chacun avec ses préconditions bloquantes et son périmètre de sécurité. **Le binaire refuse de démarrer si une précondition obligatoire n'est pas remplie pour le mode demandé.**
 

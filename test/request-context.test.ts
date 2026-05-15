@@ -1,8 +1,40 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { getRequestTokens, requestContext } from '../src/request-context.js';
+import {
+  getRequestTokens,
+  parseTrustedProxiesEnv,
+  requestContext,
+} from '../src/request-context.js';
 import GraphClient from '../src/graph-client.js';
 import type AuthManager from '../src/auth.js';
 import { AppSecrets } from '../src/secrets.js';
+
+describe('parseTrustedProxiesEnv', () => {
+  it('returns empty Set for undefined / empty / whitespace', () => {
+    expect(parseTrustedProxiesEnv(undefined).size).toBe(0);
+    expect(parseTrustedProxiesEnv('').size).toBe(0);
+    expect(parseTrustedProxiesEnv('   ').size).toBe(0);
+    expect(parseTrustedProxiesEnv(',,,').size).toBe(0);
+  });
+
+  it('parses single IP', () => {
+    const set = parseTrustedProxiesEnv('10.0.0.1');
+    expect(set.has('10.0.0.1')).toBe(true);
+    expect(set.size).toBe(1);
+  });
+
+  it('parses comma-separated list with whitespace tolerance', () => {
+    const set = parseTrustedProxiesEnv('  10.0.0.1 , 10.0.0.2 ,127.0.0.1  ');
+    expect(set.has('10.0.0.1')).toBe(true);
+    expect(set.has('10.0.0.2')).toBe(true);
+    expect(set.has('127.0.0.1')).toBe(true);
+    expect(set.size).toBe(3);
+  });
+
+  it('filters out empty tokens from trailing/double commas', () => {
+    const set = parseTrustedProxiesEnv('10.0.0.1,,10.0.0.2,');
+    expect(set.size).toBe(2);
+  });
+});
 
 describe('request-context', () => {
   it('should isolate tokens between concurrent async operations', async () => {

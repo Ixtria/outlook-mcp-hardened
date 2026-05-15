@@ -1,8 +1,11 @@
 # Specs — Remote MCP Server + OAuth 2.1 intégré (TypeScript / Node 20)
 
-> **Version** : v2 — révision post cross-review (codex 13 findings + mcp-vault peer + ADR-0002)
+> ⚠️ **STATUT** : Sections AS intégré (§5 DCR, §6 /authorize, §7 /token, §9 JWKS, §10 SQLite, §11 rate-limit, §13 discovery, §14 audit events OAuth, §17 findings DCR) sont **superseded par [ADR-0003](docs/adr/0003-pivot-niveau-b-oauth-proxy-hardened.md)** (pivot Niveau B = OAuth proxy hardened vers AAD, pas AS intégré). Restent applicables Niveau B : §8 validation token (avec `aud=Graph` documenté), §12 trust-proxy, §15 tests (modules pures déjà commités). Pour les specs Niveau B, voir directement ADR-0003 §D2-D6.
+>
+> **Version** : v2 — révision post cross-review (codex 13 findings + mcp-vault peer + ADR-0002). Conservé comme **trace de spec** historique pour les ~75% qui ne s'appliquent plus.
 > **Date** : 2026-05-10
-> **Scope** : AS intégré côté ingress (Claude.ai) + RS validation, avec token-exchange interne vers MSAL device code côté egress (Graph). Applicable au mode `http-public` (cf. [`docs/MODES.md`](docs/MODES.md)).
+> **Scope (historique v2, désormais Niveau C reporté)** : AS intégré côté ingress (Claude.ai) + RS validation, avec token-exchange interne vers MSAL device code côté egress (Graph). Applicable au mode `http-public` (cf. [`docs/MODES.md`](docs/MODES.md)).
+> **Scope (actif Niveau B v3)** : OAuth proxy MCP-side vers Microsoft AAD + hardenings ciblés (exact-match redirect, scope intersection, trust-proxy explicite). Pas d'état persistant nouveau. Voir ADR-0003.
 
 ---
 

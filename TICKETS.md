@@ -1,5 +1,15 @@
 # Tickets — Lot B/C/D/E v0.2.0
 
+> ⚠️ **POST-PIVOT Niveau B (2026-05-10, ADR-0003)** : la majorité du Lot B (TKT-B0..B12) est **DROP**. Reste applicable :
+> - Lot A : ✅ tous terminés
+> - Modules pures déjà commités (TKT-B3 partiel, TKT-B6 partiel via scope.ts, équivalent TKT-C2 via trust-proxy.ts) : ✅
+> - **Nouveaux tickets actifs** : **T19** (wire 3 modules dans `oauth-provider.ts`) + **T20** (wire trust-proxy dans `request-context.ts`) + **T21** (cross-review finale)
+> - Lot C boot guards : à reprendre mais sans préconditions AS intégré
+> - Lot D audit : étendre `audit-logger.ts` avec events OAuth proxy minimum (verify_token_success/fail, scope_filtered, redirect_rejected)
+> - Tag visé v0.2.0 : ~1 jour de travail restant
+>
+> Les tickets ci-dessous restent listés pour traçabilité, mais marqués DROP ou ADAPTÉ.
+
 > Checklist atomique dérivée de MIGRATION-PLAN-FROM-MCP-VAULT.md v2. Chaque ticket = un commit (ou une PR si touche surface auth), avec tests TDD avant le code applicatif.
 
 **Convention** : tickets référencés par leur ID dans les messages de commit (`feat(oauth/dcr): exact-match redirect uris [TKT-B3]`).
@@ -26,7 +36,15 @@
 
 ---
 
-## Lot B — OAuth AS intégré
+## Lot B (post-pivot Niveau B) — wiring chirurgical
+
+| ID | Subject | Statut | Note |
+|---|---|---|---|
+| **T19** | Wire `validateRedirectUri` + `intersectScopes` dans `MicrosoftOAuthProvider.getClient` / `server.ts /authorize` | 🔧 actif | ~30 LOC + tests |
+| **T20** | Wire `resolveClientIp` dans `request-context.ts`, remplacer `app.set('trust proxy', true)` global | 🔧 actif | ~30 LOC + tests |
+| **T21** | Cross-review finale N0+N1 sur diff Niveau B | ⏳ post T19+T20 | bloque tag v0.2.0 |
+
+### Lot B legacy (DROP per ADR-0003)
 
 | ID | Subject | Dépend | Test régression clé |
 |---|---|---|---|

@@ -1,6 +1,12 @@
 # Plan d'intégration `mcp-vault` → `outlook-mcp-hardened` — v2
 
-> **Statut** : v2 — intègre retour mcp-vault peer 2026-05-10 (APPROVED + 2 réserves) + cross-review codex 13 findings + ADR-0002.
+> ⚠️ **STATUT post-pivot Niveau B (2026-05-10)** : suite à [ADR-0003](docs/adr/0003-pivot-niveau-b-oauth-proxy-hardened.md), le Lot B est **drastiquement réduit** :
+> - **Conservés** : Lot A (méthode, qualité, docs) + 3 modules pures déjà commités (`redirect-uri`, `scope`, `trust-proxy`) + Lot C trust-proxy wiring + Lot D audit logger étendu (events OAuth proxy).
+> - **Abandonnés** : Lot B SQLite storage, key-manager Ed25519, /authorize endpoint, /token endpoint, consent UI eta, verifier JWT, discovery local, token-exchange interne MSAL, admin-CLI OAuth. Tous nécessitaient l'AS intégré que ADR-0003 supersede.
+> - **Nouveaux tickets** : T19 wiring oauth-provider + T20 wiring request-context (cf. TaskList). Total restant ~1 jour au lieu de 9-14j.
+> - Patterns mcp-vault P7-P10 (DCR, scope intersect, consent, exact-match) restent **conceptuellement adoptés** mais via 100 LOC de wiring, pas un AS standalone.
+>
+> **Statut historique** : v2 — intègre retour mcp-vault peer 2026-05-10 (APPROVED + 2 réserves) + cross-review codex 13 findings + ADR-0002 (désormais superseded).
 > **Date** : 2026-05-10
 > **Périmètre** : transposer les patterns sécurité/qualité/méthode validés par mcp-vault v0.3.4 (2678 LOC, 1043 LOC OAuth) vers outlook-mcp-hardened (TypeScript, mode http-public).
 

@@ -1,9 +1,11 @@
 # ADR-0002 — OAuth Trust Policy & AS Architecture
 
 **Date** : 2026-05-10
-**Statut** : Accepté
+**Statut** : ⚠️ **Superseded by [ADR-0003](0003-pivot-niveau-b-oauth-proxy-hardened.md)** (2026-05-10, le même jour)
 **Décideur** : Jimmy Blanquet
 **Reviewers** : mcp-vault (peer N2 via bus agent-hub), codex/gpt-5.4 (cross-school N1, 13 findings, 2 BLOCKER)
+
+> **Note historique** : Cette ADR proposait un AS intégré complet (token-exchange RFC 8693, DCR, /authorize, /token, JWKS local, consent UI, SQLite). Après livraison des fondations (3 fonctions pures) et **arbitrage minimalisme vs usine à gaz**, le projet a pivoté vers ADR-0003 (OAuth proxy hardened, ~100 LOC au lieu de ~1200). Cette ADR reste dans le repo comme trace de réflexion et référence si le scope évolue vers un produit standalone.
 
 ## Contexte
 

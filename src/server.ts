@@ -17,7 +17,14 @@ import {
 import type { CommandOptions } from './cli.ts';
 import { getSecrets, type AppSecrets } from './secrets.js';
 import { getCloudEndpoints } from './cloud-config.js';
-import { requestContext } from './request-context.js';
+import { requestContext, parseTrustedProxiesEnv } from './request-context.js';
+import { validateRedirectUri } from './oauth/redirect-uri.js';
+import { intersectScopes, serializeScope } from './oauth/scope.js';
+import {
+  allRegisteredRedirectUris,
+  allRegisteredScopes,
+} from './oauth/registered-clients.js';
+import { resolveClientIp } from './lib/trust-proxy.js';
 import crypto from 'node:crypto';
 
 /**
@@ -174,7 +181,24 @@ class MicrosoftGraphServer {
       const { host, port } = parseHttpOption(this.options.http);
 
       const app = express();
-      app.set('trust proxy', true);
+      // HARDENED (ADR-0003 D6, codex N1-B1 conf 96): replace permissive
+      // `trust proxy=true` (which trusts XFF from any peer) with an explicit
+      // operator-managed trust set. Express native `req.ip` is disabled
+      // (trust proxy=false) and we expose the resolved client IP via our own
+      // resolveClientIp() helper that walks XFF right-to-left, skipping
+      // trusted hops. If TRUSTED_PROXIES is unset (default), XFF is ignored
+      // entirely and the socket IP is used — safest fallback.
+      app.set('trust proxy', false);
+      const trustedProxies = parseTrustedProxiesEnv(process.env.OUTLOOK_MCP_TRUSTED_PROXIES);
+      app.use((req, _res, next) => {
+        const socketIp = req.socket.remoteAddress ?? '';
+        const xff = req.headers['x-forwarded-for'];
+        // Express collapses duplicate headers; in practice this is a string.
+        const xffString = Array.isArray(xff) ? xff.join(', ') : xff;
+        const clientIp = resolveClientIp(socketIp, xffString, trustedProxies);
+        (req as Request & { clientIp?: string }).clientIp = clientIp;
+        next();
+      });
       app.use(express.json());
       app.use(express.urlencoded({ extended: true }));
 
@@ -233,6 +257,15 @@ class MicrosoftGraphServer {
         next();
       });
 
+      // HARDENED (ADR-0003): writePolicy resolved here for /authorize scope
+      // intersection. Same shape as the createMcpServer() local — kept in sync
+      // because the HTTP handler needs it without coupling to createMcpServer's
+      // scope.
+      const httpWritePolicy = {
+        mail: !!this.options.enableSend,
+        calendar: !!this.options.enableWrite,
+      };
+
       const oauthProvider = new MicrosoftOAuthProvider(this.authManager, this.secrets!);
 
       // OAuth Authorization Server Discovery
@@ -278,16 +311,49 @@ class MicrosoftGraphServer {
       });
 
       if (this.options.enableDynamicRegistration) {
+        // HARDENED (ADR-0003 D2, codex N1-B2 conf 94): /register exact-match
+        // validation against the static registered-clients allowlist. We do
+        // NOT persist new clients — DCR is a thin compatibility layer for
+        // Claude.ai which expects RFC 7591 discovery, but we only echo back
+        // metadata if EVERY redirect_uri it submits matches a known entry.
+        const allowedUris = allRegisteredRedirectUris();
         app.post('/register', async (req, res) => {
-          const body = req.body;
-          logger.info('Client registration request', { body });
+          const body = req.body ?? {};
+          const requested: unknown = body.redirect_uris;
+          if (!Array.isArray(requested) || requested.length === 0) {
+            res.status(400).json({
+              error: 'invalid_redirect_uri',
+              error_description: 'redirect_uris is required and must be a non-empty array',
+            });
+            return;
+          }
+          const invalid = requested.filter(
+            (u) => typeof u !== 'string' || !validateRedirectUri(u, allowedUris)
+          );
+          if (invalid.length > 0) {
+            logger.warn('Rejected /register: redirect_uri not in allowlist', {
+              invalid_count: invalid.length,
+              client_name: body.client_name,
+            });
+            res.status(400).json({
+              error: 'invalid_redirect_uri',
+              error_description:
+                'one or more redirect_uris are not in the registered-clients allowlist',
+            });
+            return;
+          }
 
           const clientId = `mcp-client-${Date.now()}`;
+          logger.info('Client registration accepted', {
+            client_id: clientId,
+            client_name: body.client_name,
+            redirect_uris_count: requested.length,
+          });
 
           res.status(201).json({
             client_id: clientId,
             client_id_issued_at: Math.floor(Date.now() / 1000),
-            redirect_uris: body.redirect_uris || [],
+            redirect_uris: requested,
             grant_types: body.grant_types || ['authorization_code', 'refresh_token'],
             response_types: body.response_types || ['code'],
             token_endpoint_auth_method: body.token_endpoint_auth_method || 'none',
@@ -307,17 +373,39 @@ class MicrosoftGraphServer {
           `${cloudEndpoints.authority}/${tenantId}/oauth2/v2.0/authorize`
         );
 
+        // HARDENED (ADR-0003 D2, codex B1 + I2): validate redirect_uri against
+        // the static registered-clients allowlist BEFORE forwarding to Microsoft.
+        // Without this, the AS-proxy is an open redirect into the AAD callback
+        // sequence. Errors are LOCAL (no Location header) per codex I2 anti
+        // open-redirect: at this point we have not confirmed redirect_uri is
+        // safe to redirect TO, so we render an error inline.
+        const clientRedirectUri = url.searchParams.get('redirect_uri');
+        if (!clientRedirectUri) {
+          res.status(400).type('text/plain').send('invalid_request: redirect_uri is required');
+          return;
+        }
+        if (!validateRedirectUri(clientRedirectUri, allRegisteredRedirectUris())) {
+          logger.warn('Rejected /authorize: redirect_uri not in allowlist', {
+            client_ip: (req as Request & { clientIp?: string }).clientIp,
+          });
+          res
+            .status(400)
+            .type('text/plain')
+            .send('invalid_request: redirect_uri is not in the registered-clients allowlist');
+          return;
+        }
+
         // Extract client's PKCE parameters (from claude.ai or other MCP client)
         const clientCodeChallenge = url.searchParams.get('code_challenge');
         const clientCodeChallengeMethod = url.searchParams.get('code_challenge_method');
         const state = url.searchParams.get('state');
 
         // Forward parameters that Microsoft OAuth 2.0 v2.0 supports,
-        // but NOT code_challenge/code_challenge_method — we generate our own for Microsoft
+        // but NOT code_challenge/code_challenge_method — we generate our own for Microsoft.
+        // NOTE: `scope` is handled separately below (intersection, not forward-as-is).
         const allowedParams = [
           'response_type',
           'redirect_uri',
-          'scope',
           'state',
           'response_mode',
           'prompt',
@@ -331,6 +419,31 @@ class MicrosoftGraphServer {
             microsoftAuthUrl.searchParams.set(param, value);
           }
         });
+
+        // HARDENED (ADR-0003 D2, codex I1 + N1-I1/I2/I3): intersect requested
+        // scope with registered-clients allowlist (drops Files.Read et al.) AND
+        // with the server's writePolicy-aware KNOWN scopes. This is the single
+        // source of truth for "what AAD is asked to consent" — no static
+        // fallback string with Files.Read leaking through.
+        const requestedScope = url.searchParams.get('scope') ?? undefined;
+        const registeredScopesString = [...allRegisteredScopes()].join(' ');
+        const knownScopes = new Set(
+          buildScopesFromEndpoints(this.options.orgMode, this.options.enabledTools, httpWritePolicy)
+        );
+        const effectiveScopes = intersectScopes(requestedScope, registeredScopesString, knownScopes);
+        if (effectiveScopes.size > 0) {
+          microsoftAuthUrl.searchParams.set('scope', serializeScope(effectiveScopes));
+        } else {
+          logger.warn('Rejected /authorize: empty scope intersection', {
+            requested: requestedScope,
+            client_ip: (req as Request & { clientIp?: string }).clientIp,
+          });
+          res
+            .status(400)
+            .type('text/plain')
+            .send('invalid_scope: no requested scope is in the registered/known allowlist');
+          return;
+        }
 
         // Two-leg PKCE: if the client sent a code_challenge, store it and generate
         // a separate PKCE pair for the server↔Microsoft leg
@@ -374,10 +487,11 @@ class MicrosoftGraphServer {
         // Use our Microsoft app's client_id
         microsoftAuthUrl.searchParams.set('client_id', clientId);
 
-        // Ensure we have the minimal required scopes if none provided
-        if (!microsoftAuthUrl.searchParams.get('scope')) {
-          microsoftAuthUrl.searchParams.set('scope', 'User.Read Files.Read Mail.Read');
-        }
+        // HARDENED (ADR-0003, codex N1-I2 conf 98): the historical fallback
+        // `User.Read Files.Read Mail.Read` is REMOVED. If the scope intersection
+        // above produced an empty set, we already returned 400 invalid_scope.
+        // Files.Read is out of scope for an Outlook-only MCP and must never
+        // leak into the consent request.
 
         // Redirect to Microsoft's authorization page
         res.redirect(microsoftAuthUrl.toString());

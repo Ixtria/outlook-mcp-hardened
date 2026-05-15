@@ -4,7 +4,14 @@ Toutes les modifications notables de ce projet sont documentées ici.
 Format inspiré de [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versionning : [SemVer](https://semver.org/lang/fr/spec/v2.0.0.html).
 
-## [Unreleased] — Lot B OAuth AS intégré
+## [Unreleased] — Lot B OAuth proxy hardened (Niveau B, pivot 2026-05-10)
+
+### Architecture (2026-05-10 mid-Lot B pivot)
+
+- **ADR-0003 supersede ADR-0002** — pivot vers OAuth proxy hardened vers Microsoft AAD, abandonnant l'AS intégré complet (DCR, JWKS local, consent UI, SQLite, ~1200 LOC, 4 nouvelles dépendances).
+- Justification : respect du principe minimalisme du projet (CLAUDE.md §1 "Mail + Calendar uniquement"). Arbitrage utilisateur explicite contre l'usine à gaz.
+- Conséquences : ~100 LOC ajoutés au lieu de ~1200 ; zéro nouvelle dépendance (pas de `jose`, `better-sqlite3`, `eta`, `@node-rs/bcrypt`) ; time-to-v0.2.0 réduit de 9-14j à ~1j.
+- Les 3 modules pures déjà commités (`redirect-uri`, `scope`, `trust-proxy`) **restent valorisés** : ils sont wirés dans `oauth-provider.ts` et `request-context.ts` au lieu d'alimenter un AS standalone.
 
 ### Added (planned v0.2.0)
 
