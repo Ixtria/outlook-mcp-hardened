@@ -34,10 +34,32 @@ const CLAUDE_AI_ALLOWED_SCOPES: ReadonlySet<string> = new Set([
   // --enable-send / --enable-write).
   'User.Read',
   'Mail.Read',
+  'Mail.ReadWrite', // required by --enable-send write tools (create-draft, update-mail, etc.)
   'Mail.Send',
   'Calendars.Read',
   'Calendars.ReadWrite',
   'offline_access',
+  'openid',
+  'profile',
+]);
+
+/**
+ * OIDC + refresh meta-scopes that MUST be forwarded to AAD when requested,
+ * even if they are not in the writePolicy-derived "known Graph scopes" set
+ * (because they are NOT Graph permissions — they are protocol-level scopes
+ * baked into every AAD token request).
+ *
+ * Cf. N0 cross-review BLOCKER B1 (offline_access dropped → refresh token
+ * absent → session dies after 1h) and IMPORTANT I2 (User.Read dropped →
+ * /me 403 → "logged out" UX). These scopes are gated only by the per-client
+ * allowlist (CLAUDE_AI_ALLOWED_SCOPES), not by the endpoint-derived KNOWN
+ * set used for fine-grained Graph permissions.
+ */
+export const META_SCOPES: ReadonlySet<string> = new Set([
+  'offline_access',
+  'openid',
+  'profile',
+  'User.Read',
 ]);
 
 const REGISTERED_CLIENTS: ReadonlyMap<string, RegisteredClient> = new Map([

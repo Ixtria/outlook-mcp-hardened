@@ -23,7 +23,9 @@ import { intersectScopes, serializeScope } from './oauth/scope.js';
 import {
   allRegisteredRedirectUris,
   allRegisteredScopes,
+  META_SCOPES,
 } from './oauth/registered-clients.js';
+import { parseScope } from './oauth/scope.js';
 import { resolveClientIp } from './lib/trust-proxy.js';
 import crypto from 'node:crypto';
 
@@ -180,16 +182,41 @@ class MicrosoftGraphServer {
     if (this.options.http) {
       const { host, port } = parseHttpOption(this.options.http);
 
+      // HARDENED (ADR-0003 D6, N0 OBSERVATION boot guard): refuse to start
+      // when bound to a non-loopback interface without an operator-declared
+      // TRUSTED_PROXIES set. Otherwise XFF is silently ignored AND the
+      // discovery endpoints would emit non-https issuers if a TLS-terminating
+      // proxy is up. Both are configuration mistakes that should surface
+      // immediately at boot, not as broken UX later.
+      const hasTrustedProxies =
+        parseTrustedProxiesEnv(process.env.OUTLOOK_MCP_TRUSTED_PROXIES).size > 0;
+      const isLoopbackBind = host === '127.0.0.1' || host === '::1' || host === 'localhost';
+      if (!isLoopbackBind && !hasTrustedProxies) {
+        const msg =
+          `Refusing to start HTTP server bound to "${host}" without ` +
+          `OUTLOOK_MCP_TRUSTED_PROXIES. Set the env var to the comma-separated ` +
+          `list of trusted reverse-proxy IPs, or bind to 127.0.0.1. ` +
+          `See docs/adr/0003-pivot-niveau-b-oauth-proxy-hardened.md D6 and ` +
+          `docs/MODES.md "http-public".`;
+        logger.error(msg);
+        throw new Error(msg);
+      }
+
       const app = express();
-      // HARDENED (ADR-0003 D6, codex N1-B1 conf 96): replace permissive
-      // `trust proxy=true` (which trusts XFF from any peer) with an explicit
-      // operator-managed trust set. Express native `req.ip` is disabled
-      // (trust proxy=false) and we expose the resolved client IP via our own
-      // resolveClientIp() helper that walks XFF right-to-left, skipping
-      // trusted hops. If TRUSTED_PROXIES is unset (default), XFF is ignored
-      // entirely and the socket IP is used — safest fallback.
-      app.set('trust proxy', false);
+      // HARDENED (ADR-0003 D6, codex N1-B1 conf 96 + N0-B2 conf 92):
+      // Replace permissive `trust proxy=true` (which trusts XFF from any peer)
+      // with an explicit operator-managed IP allowlist. Express semantics:
+      //   - `false` → ignore ALL X-Forwarded-* (used when no proxy is configured)
+      //   - `string[] of IPs` → trust those IPs only; preserves `req.secure`
+      //     correctly via X-Forwarded-Proto, which the discovery endpoints
+      //     need to emit `https://` issuers behind a TLS-terminating proxy
+      //     (N0-B2 RFC 8414 §2 / RFC 9728 §3.1).
       const trustedProxies = parseTrustedProxiesEnv(process.env.OUTLOOK_MCP_TRUSTED_PROXIES);
+      if (trustedProxies.size > 0) {
+        app.set('trust proxy', [...trustedProxies]);
+      } else {
+        app.set('trust proxy', false);
+      }
       app.use((req, _res, next) => {
         const socketIp = req.socket.remoteAddress ?? '';
         const xff = req.headers['x-forwarded-for'];
@@ -266,6 +293,12 @@ class MicrosoftGraphServer {
         calendar: !!this.options.enableWrite,
       };
 
+      // HARDENED (N0-I3 conf 82): hoist once. Static registry → safe to cache
+      // for the lifetime of the HTTP server. Avoids per-request Set rebuild
+      // and ensures /register and /authorize see the exact same view.
+      const allowedRedirectUris = allRegisteredRedirectUris();
+      const registeredScopesString = [...allRegisteredScopes()].join(' ');
+
       const oauthProvider = new MicrosoftOAuthProvider(this.authManager, this.secrets!);
 
       // OAuth Authorization Server Discovery
@@ -316,7 +349,7 @@ class MicrosoftGraphServer {
         // NOT persist new clients — DCR is a thin compatibility layer for
         // Claude.ai which expects RFC 7591 discovery, but we only echo back
         // metadata if EVERY redirect_uri it submits matches a known entry.
-        const allowedUris = allRegisteredRedirectUris();
+        // `allowedRedirectUris` hoisted above (N0-I3).
         app.post('/register', async (req, res) => {
           const body = req.body ?? {};
           const requested: unknown = body.redirect_uris;
@@ -328,7 +361,7 @@ class MicrosoftGraphServer {
             return;
           }
           const invalid = requested.filter(
-            (u) => typeof u !== 'string' || !validateRedirectUri(u, allowedUris)
+            (u) => typeof u !== 'string' || !validateRedirectUri(u, allowedRedirectUris)
           );
           if (invalid.length > 0) {
             logger.warn('Rejected /register: redirect_uri not in allowlist', {
@@ -384,7 +417,7 @@ class MicrosoftGraphServer {
           res.status(400).type('text/plain').send('invalid_request: redirect_uri is required');
           return;
         }
-        if (!validateRedirectUri(clientRedirectUri, allRegisteredRedirectUris())) {
+        if (!validateRedirectUri(clientRedirectUri, allowedRedirectUris)) {
           logger.warn('Rejected /authorize: redirect_uri not in allowlist', {
             client_ip: (req as Request & { clientIp?: string }).clientIp,
           });
@@ -420,17 +453,30 @@ class MicrosoftGraphServer {
           }
         });
 
-        // HARDENED (ADR-0003 D2, codex I1 + N1-I1/I2/I3): intersect requested
-        // scope with registered-clients allowlist (drops Files.Read et al.) AND
-        // with the server's writePolicy-aware KNOWN scopes. This is the single
-        // source of truth for "what AAD is asked to consent" — no static
-        // fallback string with Files.Read leaking through.
+        // HARDENED (ADR-0003 D2, codex I1 + N1-I1/I2/I3, N0-cross-review B1/I1/I2):
+        // intersect requested scope with registered-clients allowlist (drops
+        // Files.Read et al.) AND with the writePolicy-derived KNOWN Graph
+        // scopes. META_SCOPES (offline_access, openid, profile, User.Read)
+        // bypass the KNOWN filter — they are OIDC/refresh protocol scopes,
+        // not Graph permissions, and would otherwise be dropped because
+        // endpoints.json doesn't declare them (N0 B1 conf 95, I2 conf 88).
         const requestedScope = url.searchParams.get('scope') ?? undefined;
-        const registeredScopesString = [...allRegisteredScopes()].join(' ');
         const knownScopes = new Set(
           buildScopesFromEndpoints(this.options.orgMode, this.options.enabledTools, httpWritePolicy)
         );
-        const effectiveScopes = intersectScopes(requestedScope, registeredScopesString, knownScopes);
+        const effectiveScopes = intersectScopes(
+          requestedScope,
+          registeredScopesString,
+          knownScopes
+        );
+        // Add META_SCOPES that survived requested ∩ registered (skipping KNOWN).
+        const requestedTokens = parseScope(requestedScope);
+        const requestedFallback = requestedTokens.size === 0 ? allRegisteredScopes() : requestedTokens;
+        for (const meta of META_SCOPES) {
+          if (requestedFallback.has(meta) && allRegisteredScopes().has(meta)) {
+            effectiveScopes.add(meta);
+          }
+        }
         if (effectiveScopes.size > 0) {
           microsoftAuthUrl.searchParams.set('scope', serializeScope(effectiveScopes));
         } else {

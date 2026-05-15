@@ -3,6 +3,7 @@ import {
   allRegisteredRedirectUris,
   allRegisteredScopes,
   getRegisteredClient,
+  META_SCOPES,
 } from '../registered-clients.js';
 import { validateRedirectUri } from '../redirect-uri.js';
 
@@ -76,6 +77,38 @@ describe('registered-clients', () => {
     it('includes Mail/Calendar scopes', () => {
       expect(allRegisteredScopes().has('Mail.Read')).toBe(true);
       expect(allRegisteredScopes().has('Calendars.Read')).toBe(true);
+    });
+
+    it('includes Mail.ReadWrite for --enable-send write tools (N0 I1 fix)', () => {
+      expect(allRegisteredScopes().has('Mail.ReadWrite')).toBe(true);
+    });
+  });
+
+  describe('META_SCOPES (N0 BLOCKER B1 + IMPORTANT I2 fix)', () => {
+    it('contains offline_access (refresh token meta-scope)', () => {
+      expect(META_SCOPES.has('offline_access')).toBe(true);
+    });
+
+    it('contains User.Read for /me userinfo + multi-account', () => {
+      expect(META_SCOPES.has('User.Read')).toBe(true);
+    });
+
+    it('contains openid + profile for OIDC compliance', () => {
+      expect(META_SCOPES.has('openid')).toBe(true);
+      expect(META_SCOPES.has('profile')).toBe(true);
+    });
+
+    it('all META_SCOPES are also in CLAUDE_AI_ALLOWED_SCOPES (invariant)', () => {
+      const registered = allRegisteredScopes();
+      for (const meta of META_SCOPES) {
+        expect(registered.has(meta), `${meta} missing from registered`).toBe(true);
+      }
+    });
+
+    it('does NOT contain Graph permission scopes (those go through KNOWN filter)', () => {
+      expect(META_SCOPES.has('Mail.Read')).toBe(false);
+      expect(META_SCOPES.has('Mail.ReadWrite')).toBe(false);
+      expect(META_SCOPES.has('Calendars.Read')).toBe(false);
     });
   });
 });

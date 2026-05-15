@@ -63,6 +63,21 @@ N1 (codex) a reviewé le repo entier (sandbox bwrap n'accède pas au range non-p
 
 N1 a aussi flaggé une **divergence README ↔ code** sur le cache MSAL : doc dit "encrypted file" mais `auth.ts:320-337` écrit en plaintext (perms 0o600). À arbitrer hors plan OAuth (patch README v0.1.1 OR chiffrement at-rest v0.3).
 
+### Security (cross-review N0 finale Niveau B, 2026-05-10)
+
+Cross-review finale post-pivot (commit `446220b`). N0 (Claude sub-agent) a flaggé 2 BLOCKERS + 3 IMPORTANT + 3 OBSERVATIONS. 4 fixés en cycle, 1 observation fixé, 2 reportées (UX + dette test integration).
+
+- **N0-B1 BLOCKER (conf 95)** — `offline_access` silently dropped : `buildScopesFromEndpoints()` dérive du `endpoints.json` qui ne liste pas les scopes OIDC/refresh, donc l'intersection les éliminait → AAD ne mintait pas de refresh token → session Claude.ai meurt après 1h. **Fix** : nouvelle constante `META_SCOPES` (`offline_access`, `openid`, `profile`, `User.Read`) que `/authorize` ajoute en bypassant la KNOWN check (sont des scopes protocole, pas des Graph permissions).
+- **N0-B2 BLOCKER (conf 92)** — `req.secure` cassé derrière reverse proxy TLS : `trust proxy=false` désactivait `X-Forwarded-Proto`, donc discovery `/.well-known/oauth-*` retournait `issuer: "http://..."` → violation RFC 8414 §2 + 9728 §3.1, Claude.ai aurait refusé le document. **Fix** : `trust proxy` configuré avec IP allowlist (`[...trustedProxies]`) quand `OUTLOOK_MCP_TRUSTED_PROXIES` non vide.
+- **N0-I1 IMPORTANT (conf 90)** — `Mail.ReadWrite` absent de `CLAUDE_AI_ALLOWED_SCOPES` cassait les write tools `--enable-send`. **Fix** : ajouté à l'allowlist.
+- **N0-I2 IMPORTANT (conf 88)** — `User.Read` même root cause que B1 (pas dans endpoints.json). **Fix** via META_SCOPES.
+- **N0-I3 IMPORTANT (conf 82)** — `allRegisteredRedirectUris()` rebuilt per request. **Fix** : hoist `allowedRedirectUris` + `registeredScopesString` au scope HTTP server une fois.
+- **N0-O1 OBSERVATION** — boot guard 0.0.0.0 sans `OUTLOOK_MCP_TRUSTED_PROXIES` manquant (ADR-0003 D6). **Fix** : throw Error au boot si bind non-loopback sans trusted-proxies.
+
+N1 codex tentative finale a échoué (sandbox bwrap `RTM_NEWADDR`, ADR-0001 §règle méta 5 connue). N0 sub-agent a couvert exhaustivement.
+
+Détails : `docs/plans/2026-05-10-cross-review-niveau-b-final.md`.
+
 ## [0.1.0] — 2026-04-XX
 
 Version initiale du hardening fork. Voir `git log v0.1.0` pour le détail.
