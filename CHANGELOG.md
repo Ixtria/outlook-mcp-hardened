@@ -42,6 +42,19 @@ Versionning : [SemVer](https://semver.org/lang/fr/spec/v2.0.0.html).
 
 - `SECURITY.md` durci (versions, contact, threat model link, hors scope explicite)
 - `CONTRIBUTING.md` ajoute section "Cross-review obligatoire avant merge sécu"
+- `docs/plans/2026-05-10-cross-review-oauth-first-wave.md` — cross-review N0+N1 sur commit b60a690
+
+### Security (cross-review N0 fixes, 2026-05-10)
+
+Première vague Lot B reviewée par Claude sub-agent N0 (pr-review-toolkit:code-reviewer) + codex N1. Convergence : 1 BLOCKER + 2 IMPORTANT trouvés par N0 dans mes 3 nouveaux modules, tous fixés.
+
+- **N0-B1 BLOCKER (conf 95)** — `normalizeRedirectUri` drop le userinfo URL (`user:pass@host`). `https://attacker@claude.ai/api/mcp/auth_callback` validait à TRUE contre l'URI enregistrée. **Fix** : `if (parsed.username !== '' || parsed.password !== '') return null;` + 3 tests régression (suite "userinfo bypass").
+- **N0-I1 IMPORTANT (conf 80)** — `DANGEROUS_PERCENT` ne bloquait que `%2F/%5C/%00`. **Fix** : extension à `%0A/%0D/%2E` (CRLF + dot anti-`..`-smuggling) + 5 tests régression.
+- **N0-I2 IMPORTANT (conf 82)** — IPv4-mapped IPv6 (`::ffff:10.0.0.1`) ne matchait pas une entrée `10.0.0.1` dans `TRUSTED_PROXIES`. Silent attribution bug. **Fix** : helper `normalizeIp()` strip `::ffff:` prefix après validation dotted-quad + 4 tests régression.
+
+N1 (codex) a reviewé le repo entier (sandbox bwrap n'accède pas au range non-pushé local) et a confirmé **les bugs legacy v0.1 que le Lot B doit remplacer** : `trust proxy=true` global, `/register` echo sans persistance, scope forwardé sans intersection, fallback scope avec `Files.Read`. Tous tracés vers les tickets TKT-B3/B4/B6/B8/B11/C2/C3 du Lot B planifié.
+
+N1 a aussi flaggé une **divergence README ↔ code** sur le cache MSAL : doc dit "encrypted file" mais `auth.ts:320-337` écrit en plaintext (perms 0o600). À arbitrer hors plan OAuth (patch README v0.1.1 OR chiffrement at-rest v0.3).
 
 ## [0.1.0] — 2026-04-XX
 

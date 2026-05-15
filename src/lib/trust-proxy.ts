@@ -19,22 +19,44 @@
  * Cf. SPECS-OAUTH-MCP.md v2 §12 and docs/MODES.md "Mode http-public".
  */
 
+/**
+ * Normalize an IPv4-mapped IPv6 address (`::ffff:1.2.3.4`) to its IPv4 form.
+ * Node's `req.socket.remoteAddress` on a dual-stack listener delivers IPv4
+ * peers as `::ffff:A.B.C.D`, which would never match an operator's `A.B.C.D`
+ * entry in TRUSTED_PROXIES (N0 review I2, conf 82, 2026-05-10). We strip the
+ * prefix so equality is operator-intent rather than transport-detail.
+ */
+function normalizeIp(ip: string): string {
+  if (ip.startsWith('::ffff:')) {
+    const stripped = ip.slice(7);
+    // Validate it looks like dotted-quad IPv4 (4 octets 0-255). If not, keep
+    // original (e.g. `::ffff:abcd::1` exotic form — let it match literally).
+    if (/^(\d{1,3}\.){3}\d{1,3}$/.test(stripped)) {
+      const octets = stripped.split('.').map(Number);
+      if (octets.every((o) => o >= 0 && o <= 255)) return stripped;
+    }
+  }
+  return ip;
+}
+
 export function resolveClientIp(
   socketIp: string,
   xff: string | undefined,
   trustedProxies: ReadonlySet<string>
 ): string {
+  const peer = normalizeIp(socketIp);
+
   // 1. If the immediate peer is not a trusted proxy, the XFF header is
   //    attacker-controlled. Trust nothing from it — return socket IP.
-  if (!trustedProxies.has(socketIp)) return socketIp;
+  if (!trustedProxies.has(peer)) return peer;
 
   // 2. Peer is trusted. Parse XFF.
-  if (!xff) return socketIp;
+  if (!xff) return peer;
   const hops = xff
     .split(',')
-    .map((h) => h.trim())
+    .map((h) => normalizeIp(h.trim()))
     .filter((h) => h.length > 0);
-  if (hops.length === 0) return socketIp;
+  if (hops.length === 0) return peer;
 
   // 3. Walk right-to-left, skipping trusted-proxy hops, stop at first
   //    non-trusted = closest origin we can still attribute.
@@ -45,5 +67,5 @@ export function resolveClientIp(
 
   // 4. Pathological case: every hop is itself a trusted proxy. Fall back
   //    to leftmost — RFC 7239 §5.2 convention for "the original client".
-  return hops[0] ?? socketIp;
+  return hops[0] ?? peer;
 }

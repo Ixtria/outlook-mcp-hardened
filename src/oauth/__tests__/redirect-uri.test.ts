@@ -152,6 +152,71 @@ describe('validateRedirectUri (fix codex B1 — exact-match, no wildcard)', () =
       expect(validateRedirectUri('https://claude.ai/api/mcp/auth_callback', new Set())).toBe(false);
     });
   });
+
+  describe('rejection — userinfo bypass (N0 review B1, conf 95)', () => {
+    it('rejects URI with username-only userinfo', () => {
+      expect(
+        validateRedirectUri(
+          'https://attacker@claude.ai/api/mcp/auth_callback',
+          CLAUDE_ALLOWLIST
+        )
+      ).toBe(false);
+    });
+
+    it('rejects URI with username:password userinfo', () => {
+      expect(
+        validateRedirectUri(
+          'https://u:p@claude.ai/api/mcp/auth_callback',
+          CLAUDE_ALLOWLIST
+        )
+      ).toBe(false);
+    });
+
+    it('rejects empty-username userinfo (colon-only)', () => {
+      // `https://:@host/...` — username empty, password empty but colon present
+      expect(
+        validateRedirectUri(
+          'https://:secret@claude.ai/api/mcp/auth_callback',
+          CLAUDE_ALLOWLIST
+        )
+      ).toBe(false);
+    });
+  });
+
+  describe('rejection — extended DANGEROUS_PERCENT (N0 review I1)', () => {
+    it('rejects %0A (encoded LF, anti audit-log injection)', () => {
+      expect(
+        validateRedirectUri('https://claude.ai/api/mcp/auth_callback%0AX-Evil:1', CLAUDE_ALLOWLIST)
+      ).toBe(false);
+    });
+
+    it('rejects %0D (encoded CR)', () => {
+      expect(
+        validateRedirectUri('https://claude.ai/api/mcp/auth_callback%0D', CLAUDE_ALLOWLIST)
+      ).toBe(false);
+    });
+
+    it('rejects %2E (encoded dot, anti `..` smuggling)', () => {
+      expect(
+        validateRedirectUri('https://claude.ai/api/mcp/auth_callback%2E', CLAUDE_ALLOWLIST)
+      ).toBe(false);
+    });
+
+    it('rejects %2E%2E path-traversal payload', () => {
+      expect(
+        validateRedirectUri('https://claude.ai/api/mcp/%2E%2E/auth_callback', CLAUDE_ALLOWLIST)
+      ).toBe(false);
+    });
+
+    it('rejects lowercase variants %0a %0d %2e', () => {
+      expect(
+        validateRedirectUri('https://claude.ai/api/mcp/auth_callback%0a', CLAUDE_ALLOWLIST)
+      ).toBe(false);
+      expect(
+        validateRedirectUri('https://claude.ai/api/mcp/auth_callback%2e', CLAUDE_ALLOWLIST)
+      ).toBe(false);
+    });
+  });
 });
 
 describe('normalizeRedirectUri', () => {

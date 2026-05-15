@@ -96,6 +96,34 @@ describe('resolveClientIp (fix codex I8 — explicit trusted-proxy model)', () =
     });
   });
 
+  describe('IPv4-mapped IPv6 (N0 review I2, conf 82)', () => {
+    it('socket as IPv4-mapped IPv6 matches IPv4 entry in TRUSTED_PROXIES', () => {
+      // Node dual-stack listener delivers `::ffff:10.0.0.1` for an IPv4 peer.
+      expect(resolveClientIp('::ffff:10.0.0.1', '1.2.3.4', TRUSTED)).toBe('1.2.3.4');
+    });
+
+    it('XFF entry as IPv4-mapped IPv6 also matches IPv4 trusted entry', () => {
+      expect(
+        resolveClientIp('10.0.0.1', '1.2.3.4, ::ffff:10.0.0.2', TRUSTED)
+      ).toBe('1.2.3.4');
+    });
+
+    it('preserves real IPv6 addresses untouched', () => {
+      // Not an IPv4-mapped form — keep as-is so it can match a real IPv6 entry.
+      expect(resolveClientIp('2001:db8::1', undefined, new Set(['2001:db8::1']))).toBe(
+        '2001:db8::1'
+      );
+    });
+
+    it('does not strip prefix from malformed IPv4-mapped string', () => {
+      // `::ffff:999.999.999.999` — looks like the prefix but octets invalid.
+      // Keep literal so it matches operator-listed literal if exotic.
+      expect(
+        resolveClientIp('::ffff:999.999.999.999', undefined, new Set(['::ffff:999.999.999.999']))
+      ).toBe('::ffff:999.999.999.999');
+    });
+  });
+
   describe('attack scenarios (regression tests)', () => {
     it('attacker directly connecting cannot impersonate via XFF', () => {
       // Attacker at 9.9.9.9 not behind a trusted proxy, sets XFF to claim
