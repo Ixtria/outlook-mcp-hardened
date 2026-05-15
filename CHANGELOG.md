@@ -1,0 +1,64 @@
+# Changelog
+
+Toutes les modifications notables de ce projet sont documentées ici.
+Format inspiré de [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+Versionning : [SemVer](https://semver.org/lang/fr/spec/v2.0.0.html).
+
+## [Unreleased] — Lot B OAuth AS intégré
+
+### Added (planned v0.2.0)
+
+- ADR-0001 — Grille cross-LLM review N0+N1+N2+N3 (mcp-vault peer)
+- ADR-0002 — OAuth Trust Policy & AS Architecture : DCR registered-only par défaut, AS intégré (RFC 8693 token-exchange) côté ingress, MSAL device code conservé côté egress
+- THREAT-MODEL OAuth AS (STRIDE) + politiques de recovery
+- MODES.md — matrice stdio / http-loopback / http-public avec préconditions bloquantes
+- SPECS-OAUTH-MCP.md v2 — 13 findings codex intégrés
+- MIGRATION-PLAN-FROM-MCP-VAULT.md v2 — retour mcp-vault peer review + correctifs codex
+- TICKETS.md — lots A-E en checklist atomique
+- `docs/plans/TEMPLATE.md` — template plan cross-review (format V3)
+- `docs/adr/TEMPLATE.md` — template ADR
+
+### Security (planned v0.2.0 — réponses cross-review codex 2026-05-10)
+
+- **B1 BLOCKER fix** — `redirect_uri` exact-match hardcodé, refus wildcard (`https://claude.ai/*` etc.). DCR allowlist par client_name connu.
+- **B2 BLOCKER fix** — DCR registered-only par défaut. Mode `registered-trusted-dcr` exige Initial Access Token. Mode `open-dcr` interdit en prod.
+- **I1 fix** — `effective_scope = requested ∩ registered ∩ KNOWN` rendu normatif dans SPECS et codé en TS. Pas d'exception trusted-client (rejet finding mcp-vault Option B v0.3.4).
+- **I2 fix** — `/authorize` ne redirige avec `error=` que si `client_id` + `redirect_uri` sont validés exactement contre registered. Sinon erreur locale non redirigée (anti open-redirect).
+- **I3 fix** — Consent UX : cookie session `HttpOnly; Secure; SameSite=Strict`, CSRF token lié à la session, `frame-ancestors 'none'`, liaison login-consent obligatoire.
+- **I4 fix** — Consommation atomique `auth_codes` et `refresh_tokens` : `BEGIN IMMEDIATE; UPDATE … SET used=1 WHERE code=? AND used=0 AND expires_at>?` + check `rowcount==1`.
+- **I5 fix** — Refresh token rotation avec `family_id` + `parent_token_hash` + détection de reuse → révocation de toute la famille (RFC 9700).
+- **I6 fix** — Politique backup SQLite normative : mode WAL, checkpoint, restore post-procédure `DELETE FROM auth_codes; DELETE FROM refresh_tokens` (invalide tout token antérieur au snapshot).
+- **I7 fix** — JWT `alg=EdDSA` figé, refus de tout token avec `alg` différent, unicité forte `kid`, lookup `kid → key` documenté.
+- **I8 fix** — Modèle de confiance proxy explicite (`OUTLOOK_MCP_TRUSTED_PROXIES`). XFF lu uniquement si peer IP ∈ trusted. Sinon socket IP. Pas d'heuristique rightmost/leftmost magique.
+- **I9 fix** — "Trusted-redirect exception" (mcp-vault v0.3.4 Option B) **non importée**. Pour chaque client, scope/redirect dans `oauth-clients.json` registered-only.
+
+### Changed (planned v0.2.0)
+
+- `src/oauth-provider.ts` legacy (ProxyOAuthServerProvider AAD) remplacé par `src/oauth/` package complet : `as-server.ts`, `dcr.ts`, `authorize.ts`, `token.ts`, `jwks.ts`, `consent.ts`, `verifier.ts`, `storage.ts` (SQLite).
+- `src/request-context.ts` étendu : `clientIp` (trusted-proxy resolved), `userJwt`, `clientId`.
+- Pre-commit hook `husky` + `lint-staged` + coverage threshold vitest ≥80% sur `src/security/*` et `src/oauth/*`.
+
+### Documentation
+
+- `SECURITY.md` durci (versions, contact, threat model link, hors scope explicite)
+- `CONTRIBUTING.md` ajoute section "Cross-review obligatoire avant merge sécu"
+
+## [0.1.0] — 2026-04-XX
+
+Version initiale du hardening fork. Voir `git log v0.1.0` pour le détail.
+
+### Added
+
+- Fork chirurgical de `@softeria/ms-365-mcp-server@0b1a2fe` (MIT) → `@ixtria/outlook-mcp-hardened` (Apache-2.0)
+- `src/security/egress-guard.ts` — allowlist `login.microsoftonline.com` + `graph.microsoft.com`, monkey-patch `globalThis.fetch`
+- `src/security/audit-logger.ts` — JSON stderr, account hashé SHA-256
+- `src/security/injection-wrapper.ts` — `<untrusted_content>` wrapper sur mail bodies
+- `src/security/write-policy.ts` — gating `--enable-send` / `--enable-write`
+- Filtrage `endpoints.json` upstream : 202 → ~58 endpoints Mail+Calendar uniquement
+- Markers `// HARDENED:` sur chaque ligne modifiée d'un fichier upstream
+- npm tarball whitelist (exclusion tests + dev logs)
+
+### Security
+
+- Lockfile npm audit `--audit-level=moderate` clean en CI
+- Aucune dépendance avec `fetch` hors allowlist

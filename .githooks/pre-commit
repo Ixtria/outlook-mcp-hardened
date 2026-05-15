@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Quality gate pre-commit hook (ADR-0001 §règle méta 1, mcp-vault inspired).
+# Enable: git config core.hooksPath .githooks
+# Skip ad-hoc (use sparingly): SKIP_PRECOMMIT=1 git commit ...
+
+set -euo pipefail
+
+if [[ "${SKIP_PRECOMMIT:-0}" == "1" ]]; then
+  echo "⏭️  pre-commit skipped (SKIP_PRECOMMIT=1)" >&2
+  exit 0
+fi
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+# 1. Trivial-commit detection (ADR-0001 §règle méta 2) — skip heavy checks.
+STAGED=$(git diff --cached --name-only)
+NON_TRIVIAL=$(echo "$STAGED" | grep -E '\.(ts|js|mjs|cjs)$' || true)
+if [[ -z "$NON_TRIVIAL" ]]; then
+  echo "ℹ️  No TS/JS in staged diff — skipping lint+typecheck" >&2
+  exit 0
+fi
+
+# 2. Lint + typecheck (fast, blocking).
+echo "🔍 lint..." >&2
+npm run lint --silent
+
+echo "🔍 typecheck..." >&2
+npm run typecheck --silent
+
+# 3. Tests for touched modules (best-effort, blocking on failure).
+TOUCHED_SECURITY=$(echo "$STAGED" | grep -E '^src/(security|oauth)/' || true)
+if [[ -n "$TOUCHED_SECURITY" ]]; then
+  echo "🔍 security/oauth changes detected — running coverage tests..." >&2
+  npm run test:coverage --silent
+fi
+
+echo "✅ pre-commit OK" >&2
