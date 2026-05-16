@@ -13,30 +13,82 @@
  * explicit trust-proxy model where the operator declares which peer IPs
  * are trusted reverse proxies, and the algorithm walks the XFF chain
  * right-to-left, skipping trusted-proxy hops, and stops at the first
- * non-trusted hop — which represents the closest non-proxy origin we can
- * still safely attribute to.
+ * non-trusted hop.
  *
  * Cf. SPECS-OAUTH-MCP.md v2 §12 and docs/MODES.md "Mode http-public".
  */
 
+import { isIP } from 'node:net';
+
 /**
- * Normalize an IPv4-mapped IPv6 address (`::ffff:1.2.3.4`) to its IPv4 form.
- * Node's `req.socket.remoteAddress` on a dual-stack listener delivers IPv4
- * peers as `::ffff:A.B.C.D`, which would never match an operator's `A.B.C.D`
- * entry in TRUSTED_PROXIES (N0 review I2, conf 82, 2026-05-10). We strip the
- * prefix so equality is operator-intent rather than transport-detail.
+ * Canonicalize an IP literal so equality matches operator-intent rather than
+ * transport-detail or human typo. Resolves N0 review I2 + I4.
+ *
+ * Transformations:
+ *   1. Strip the IPv4-mapped IPv6 prefix `::ffff:` when followed by IPv4.
+ *   2. For IPv4 dotted-quad: strip leading zeros (`192.168.001.001` →
+ *      `192.168.1.1`). Node's `net.isIP()` REJECTS leading-zero forms
+ *      outright, so canonicalization MUST precede validation.
+ *   3. For IPv6: lowercase the literal (Node delivers lowercase but env
+ *      vars may be typed uppercase).
+ *
+ * Not handled: full RFC 5952 IPv6 canonicalization (`2001:0db8::1` vs
+ * `2001:db8::1`). Operators must use the compact form.
+ *
+ * Returns the input unchanged when it is not a recognizable IP literal.
  */
-function normalizeIp(ip: string): string {
-  if (ip.startsWith('::ffff:')) {
-    const stripped = ip.slice(7);
-    // Validate it looks like dotted-quad IPv4 (4 octets 0-255). If not, keep
-    // original (e.g. `::ffff:abcd::1` exotic form — let it match literally).
-    if (/^(\d{1,3}\.){3}\d{1,3}$/.test(stripped)) {
-      const octets = stripped.split('.').map(Number);
-      if (octets.every((o) => o >= 0 && o <= 255)) return stripped;
-    }
+export function normalizeIp(ip: string): string {
+  let candidate = ip;
+
+  // Step 1 : strip ::ffff: prefix
+  if (candidate.startsWith('::ffff:')) {
+    candidate = candidate.slice(7);
   }
+
+  // Step 2 : if dotted-quad IPv4 pattern, normalize leading zeros.
+  const ipv4Match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(candidate);
+  if (ipv4Match) {
+    const octets = [ipv4Match[1], ipv4Match[2], ipv4Match[3], ipv4Match[4]].map((o) =>
+      Number(o)
+    );
+    if (octets.every((o) => Number.isInteger(o) && o >= 0 && o <= 255)) {
+      return octets.join('.');
+    }
+    // Octet out of range — pass original (caller decides via isIP=0).
+    return ip;
+  }
+
+  // Step 3 : IPv6 lowercase, only if recognized.
+  if (isIP(candidate) === 6) {
+    return candidate.toLowerCase();
+  }
+
   return ip;
+}
+
+/**
+ * Parse OUTLOOK_MCP_TRUSTED_PROXIES env var into a frozen Set of canonical
+ * IP literals. Resolves N0 I4 (conf 80).
+ *
+ * Invalid entries (non-IP literals — typos, hostnames) are skipped with a
+ * stderr warning rather than crashing the server.
+ */
+export function parseTrustedProxiesEnv(raw: string | undefined): ReadonlySet<string> {
+  if (!raw) return new Set();
+  const result = new Set<string>();
+  for (const token of raw.split(',')) {
+    const trimmed = token.trim();
+    if (trimmed.length === 0) continue;
+    const canonical = normalizeIp(trimmed);
+    if (isIP(canonical) === 0) {
+      process.stderr.write(
+        `[trust-proxy] OUTLOOK_MCP_TRUSTED_PROXIES entry "${trimmed}" is not a valid IP literal. Entry ignored.\n`
+      );
+      continue;
+    }
+    result.add(canonical);
+  }
+  return result;
 }
 
 export function resolveClientIp(
@@ -46,11 +98,8 @@ export function resolveClientIp(
 ): string {
   const peer = normalizeIp(socketIp);
 
-  // 1. If the immediate peer is not a trusted proxy, the XFF header is
-  //    attacker-controlled. Trust nothing from it — return socket IP.
   if (!trustedProxies.has(peer)) return peer;
 
-  // 2. Peer is trusted. Parse XFF.
   if (!xff) return peer;
   const hops = xff
     .split(',')
@@ -58,14 +107,10 @@ export function resolveClientIp(
     .filter((h) => h.length > 0);
   if (hops.length === 0) return peer;
 
-  // 3. Walk right-to-left, skipping trusted-proxy hops, stop at first
-  //    non-trusted = closest origin we can still attribute.
   for (let i = hops.length - 1; i >= 0; i--) {
     const hop = hops[i];
     if (hop !== undefined && !trustedProxies.has(hop)) return hop;
   }
 
-  // 4. Pathological case: every hop is itself a trusted proxy. Fall back
-  //    to leftmost — RFC 7239 §5.2 convention for "the original client".
   return hops[0] ?? peer;
 }

@@ -8,10 +8,10 @@ import { registerAuthTools } from './auth-tools.js';
 import { registerGraphTools, registerDiscoveryTools } from './graph-tools.js';
 import GraphClient from './graph-client.js';
 import AuthManager, { buildScopesFromEndpoints } from './auth.js';
-import { MicrosoftOAuthProvider } from './oauth-provider.js';
+import { MicrosoftOAuthProvider, verifyMicrosoftAccessToken } from './oauth-provider.js';
 import {
+  createBearerAuthMiddleware,
   exchangeCodeForToken,
-  microsoftBearerTokenAuthMiddleware,
   refreshAccessToken,
 } from './lib/microsoft-auth.js';
 import type { CommandOptions } from './cli.ts';
@@ -349,6 +349,17 @@ class MicrosoftGraphServer {
       const registeredScopesString = [...allRegisteredScopes()].join(' ');
 
       const oauthProvider = new MicrosoftOAuthProvider(this.authManager, this.secrets!);
+
+      // HARDENED (N0 I2 fix 2026-05-16): /mcp Bearer middleware now VALIDATES
+      // the token via the same verifier as the SDK provider (Graph /me round-
+      // trip). Before this fix, the middleware was pass-through — any string
+      // after "Bearer " reached the MCP route handlers, exposing tools/list
+      // and other MCP utility methods to unauthenticated enumeration.
+      const secrets = this.secrets!;
+      const authManager = this.authManager;
+      const bearerAuthMiddleware = createBearerAuthMiddleware(async (token) => {
+        await verifyMicrosoftAccessToken(token, secrets.cloudType, secrets.clientId, authManager);
+      });
 
       // OAuth Authorization Server Discovery
       app.get('/.well-known/oauth-authorization-server', async (req, res) => {
@@ -728,7 +739,7 @@ class MicrosoftGraphServer {
       // Handle both GET and POST methods as required by MCP Streamable HTTP specification
       app.get(
         '/mcp',
-        microsoftBearerTokenAuthMiddleware,
+        bearerAuthMiddleware,
         async (
           req: Request & { microsoftAuth?: { accessToken: string; refreshToken: string } },
           res: Response
@@ -778,7 +789,7 @@ class MicrosoftGraphServer {
 
       app.post(
         '/mcp',
-        microsoftBearerTokenAuthMiddleware,
+        bearerAuthMiddleware,
         async (
           req: Request & { microsoftAuth?: { accessToken: string; refreshToken: string } },
           res: Response

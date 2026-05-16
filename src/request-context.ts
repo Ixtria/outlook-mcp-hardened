@@ -1,5 +1,10 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
+// HARDENED (N0-I4 fix 2026-05-16): canonicalization + validation of trusted
+// proxy IPs moved to src/lib/trust-proxy.ts to colocate with normalizeIp
+// (same canonical form is required on both sides of the equality check).
+export { parseTrustedProxiesEnv } from './lib/trust-proxy.js';
+
 /**
  * Per-request context propagated through Node async boundaries via
  * AsyncLocalStorage. Populated by the HTTP entry middleware before any tool
@@ -28,17 +33,3 @@ export function getRequestTokens(): RequestContext | undefined {
   return requestContext.getStore();
 }
 
-/**
- * Parse the `OUTLOOK_MCP_TRUSTED_PROXIES` env var (comma-separated IPs) into a
- * frozen Set ready for `resolveClientIp()`. Returns an empty Set if unset or
- * whitespace-only, which makes the trust-proxy algorithm safely fall back to
- * the socket IP regardless of XFF content.
- */
-export function parseTrustedProxiesEnv(raw: string | undefined): ReadonlySet<string> {
-  if (!raw) return new Set();
-  const items = raw
-    .split(',')
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-  return new Set(items);
-}

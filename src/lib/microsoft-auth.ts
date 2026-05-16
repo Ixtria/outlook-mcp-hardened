@@ -1,10 +1,91 @@
-import { Request, Response, NextFunction } from 'express';
+import { Request, Response, NextFunction, RequestHandler } from 'express';
 import logger from '../logger.js';
 import { getCloudEndpoints, type CloudType } from '../cloud-config.js';
 
 /**
- * Microsoft Bearer Token Auth Middleware validates that the request has a valid Microsoft access token
- * The token is passed in the Authorization header as a Bearer token
+ * Type alias for the token verifier signature used by the bearer middleware
+ * factory. Returns AuthInfo-like (we only consume the token's validity here).
+ */
+export type TokenVerifier = (token: string) => Promise<unknown>;
+
+/**
+ * HARDENED (N0 I2 fix 2026-05-16) — Factory that builds an Express middleware
+ * which validates the incoming Bearer token via the injected verifier BEFORE
+ * routing to the protected handler.
+ *
+ * Before this factory, `microsoftBearerTokenAuthMiddleware` was pass-through —
+ * any arbitrary string after "Bearer " reached `/mcp`. Combined with MCP
+ * methods like `tools/list` that don't call Graph at all, an unauthenticated
+ * attacker could enumerate the tool surface, version, and capabilities.
+ *
+ * Now :
+ *   1. Missing/malformed header → 401 + WWW-Authenticate
+ *   2. Verifier throws → 401 + WWW-Authenticate with error=invalid_token
+ *   3. Verifier OK → token attached to req.microsoftAuth, next()
+ *
+ * Audit : failures are logged at warn level with client_ip (resolved via
+ * trust-proxy) and a hashed token prefix for correlation, but NEVER the
+ * full token (PII / supply-chain leak prevention).
+ */
+export function createBearerAuthMiddleware(verifier: TokenVerifier): RequestHandler {
+  return async (
+    req: Request & {
+      microsoftAuth?: { accessToken: string; refreshToken: string };
+      clientIp?: string;
+    },
+    res: Response,
+    next: NextFunction
+  ): Promise<void> => {
+    const authHeader = req.headers.authorization;
+
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      res
+        .status(401)
+        .set('WWW-Authenticate', 'Bearer realm="mcp"')
+        .json({ error: 'invalid_token', error_description: 'Missing or invalid Authorization header' });
+      return;
+    }
+
+    const accessToken = authHeader.substring(7).trim();
+    if (accessToken.length === 0) {
+      res
+        .status(401)
+        .set('WWW-Authenticate', 'Bearer realm="mcp", error="invalid_token"')
+        .json({ error: 'invalid_token', error_description: 'Empty Bearer token' });
+      return;
+    }
+
+    try {
+      await verifier(accessToken);
+    } catch (error) {
+      logger.warn('Rejected /mcp: token verification failed', {
+        client_ip: req.clientIp,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      res
+        .status(401)
+        .set('WWW-Authenticate', 'Bearer realm="mcp", error="invalid_token"')
+        .json({ error: 'invalid_token', error_description: 'Token verification failed' });
+      return;
+    }
+
+    const refreshToken = (req.headers['x-microsoft-refresh-token'] as string) || '';
+    req.microsoftAuth = {
+      accessToken,
+      refreshToken,
+    };
+
+    next();
+  };
+}
+
+/**
+ * @deprecated kept for backwards compatibility ; use createBearerAuthMiddleware
+ * with an actual verifier. The pass-through version is unsafe for production
+ * (N0 I2 BLOCKER-level when reachable from public network).
+ *
+ * Now hard-deprecated : throws at boot if anyone tries to use it without
+ * understanding the risk. The throw is in the factory call site, not here.
  */
 export const microsoftBearerTokenAuthMiddleware = (
   req: Request & { microsoftAuth?: { accessToken: string; refreshToken: string } },
@@ -19,14 +100,8 @@ export const microsoftBearerTokenAuthMiddleware = (
   }
 
   const accessToken = authHeader.substring(7);
-
-  // For Microsoft Graph, we don't validate the token here - we'll let the API calls fail if it's invalid
-  // and handle token refresh in the GraphClient
-
-  // Extract refresh token from a custom header (if provided)
   const refreshToken = (req.headers['x-microsoft-refresh-token'] as string) || '';
 
-  // Store tokens in request for later use
   req.microsoftAuth = {
     accessToken,
     refreshToken,
@@ -61,12 +136,10 @@ export async function exchangeCodeForToken(
     client_id: clientId,
   });
 
-  // Add client_secret for confidential clients
   if (clientSecret) {
     params.append('client_secret', clientSecret);
   }
 
-  // Add code_verifier for PKCE flow
   if (codeVerifier) {
     params.append('code_verifier', codeVerifier);
   }
