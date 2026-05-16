@@ -1,0 +1,51 @@
+version: 2
+
+updates:
+  # npm production + dev dependencies
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: Europe/Zurich
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+      - security
+    commit-message:
+      prefix: 'chore(deps)'
+      include: scope
+    # Group minor/patch updates together to reduce PR noise — majors stay
+    # individual so they get explicit review.
+    groups:
+      minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+      security:
+        applies-to: security-updates
+        update-types:
+          - minor
+          - patch
+          - major
+    # Block deps we have explicit reasons NOT to bump automatically.
+    ignore:
+      # Stay on commander v11 — v12+ has breaking API changes around action()
+      # that would require a refactor (cli.ts).
+      - dependency-name: commander
+        update-types: [version-update:semver-major]
+
+  # GitHub Actions versioning
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - ci
+    commit-message:
+      prefix: 'chore(ci)'

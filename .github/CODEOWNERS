@@ -1,0 +1,29 @@
+# Code owners for outlook-mcp-hardened.
+#
+# Anyone listed here is automatically requested as reviewer when a PR
+# touches a matching file. Required for security-critical surfaces so a
+# patch can't land without explicit ownership review.
+
+# Default owner — everything not covered below
+*                              @Ixtria
+
+# Security-critical surfaces — owner review required
+/src/security/                 @Ixtria
+/src/oauth/                    @Ixtria
+/src/request-context.ts        @Ixtria
+/src/auth.ts                   @Ixtria
+/src/oauth-provider.ts         @Ixtria
+/src/lib/trust-proxy.ts        @Ixtria
+
+# Architecture / policy docs
+/docs/adr/                     @Ixtria
+/docs/threat-model/            @Ixtria
+/SECURITY.md                   @Ixtria
+/SPECS-OAUTH-MCP.md            @Ixtria
+
+# CI / build / supply chain
+/.github/                      @Ixtria
+/package.json                  @Ixtria
+/package-lock.json             @Ixtria
+/tsconfig*.json                @Ixtria
+/.githooks/                    @Ixtria
