@@ -209,15 +209,21 @@ class MicrosoftGraphServer {
     if (this.options.http) {
       const { host, port } = parseHttpOption(this.options.http);
 
-      // HARDENED (ADR-0003 D6, N0 OBSERVATION boot guard): refuse to start
-      // when bound to a non-loopback interface without an operator-declared
-      // TRUSTED_PROXIES set. Otherwise XFF is silently ignored AND the
-      // discovery endpoints would emit non-https issuers if a TLS-terminating
-      // proxy is up. Both are configuration mistakes that should surface
-      // immediately at boot, not as broken UX later.
+      // HARDENED (ADR-0003 D6 + N0 I3 + N0 I6 boot guards 2026-05-16):
+      //
+      // 1. Non-loopback bind requires `OUTLOOK_MCP_TRUSTED_PROXIES` (XFF
+      //    attribution + req.secure semantics behind TLS terminator).
+      // 2. Non-loopback bind requires `OUTLOOK_MCP_PUBLIC_URL` (RFC 8414 §2
+      //    forbids reflecting Host header into `issuer` — that's the N0 I3
+      //    finding). The URL must be `https://...` for non-loopback deploys.
+      // 3. `OUTLOOK_MCP_CORS_ORIGIN=*` is a footgun (N0 I6) — refuse boot
+      //    unless `OUTLOOK_MCP_CORS_ALLOW_WILDCARD=true` is also set, an
+      //    explicit opt-in that survives operator review.
       const hasTrustedProxies =
         parseTrustedProxiesEnv(process.env.OUTLOOK_MCP_TRUSTED_PROXIES).size > 0;
+      const publicUrl = process.env.OUTLOOK_MCP_PUBLIC_URL ?? this.options.baseUrl;
       const isLoopbackBind = host === '127.0.0.1' || host === '::1' || host === 'localhost';
+
       if (!isLoopbackBind && !hasTrustedProxies) {
         const msg =
           `Refusing to start HTTP server bound to "${host}" without ` +
@@ -225,6 +231,36 @@ class MicrosoftGraphServer {
           `list of trusted reverse-proxy IPs, or bind to 127.0.0.1. ` +
           `See docs/adr/0003-pivot-niveau-b-oauth-proxy-hardened.md D6 and ` +
           `docs/MODES.md "http-public".`;
+        logger.error(msg);
+        throw new Error(msg);
+      }
+
+      if (!isLoopbackBind && !publicUrl) {
+        const msg =
+          `Refusing to start HTTP server bound to "${host}" without ` +
+          `OUTLOOK_MCP_PUBLIC_URL. Discovery endpoints (/.well-known/oauth-*) ` +
+          `MUST advertise the public https:// origin, not the Host header ` +
+          `(RFC 8414 §2). Set OUTLOOK_MCP_PUBLIC_URL=https://mcp.example.com`;
+        logger.error(msg);
+        throw new Error(msg);
+      }
+
+      if (publicUrl && !isLoopbackBind && !publicUrl.startsWith('https://')) {
+        const msg =
+          `OUTLOOK_MCP_PUBLIC_URL must use https:// for non-loopback deployments ` +
+          `(got: "${publicUrl}"). RFC 8414 §2 + RFC 9728 §3.1 require https:// issuers.`;
+        logger.error(msg);
+        throw new Error(msg);
+      }
+
+      if (
+        process.env.OUTLOOK_MCP_CORS_ORIGIN === '*' &&
+        process.env.OUTLOOK_MCP_CORS_ALLOW_WILDCARD !== 'true'
+      ) {
+        const msg =
+          `Refusing to start with OUTLOOK_MCP_CORS_ORIGIN=* — wildcard CORS to ` +
+          `a Bearer-protected resource is a footgun. If you really need it, ` +
+          `set OUTLOOK_MCP_CORS_ALLOW_WILDCARD=true to acknowledge the risk.`;
         logger.error(msg);
         throw new Error(msg);
       }
@@ -278,53 +314,56 @@ class MicrosoftGraphServer {
       app.use(express.json({ limit: '10kb' }));
       app.use(express.urlencoded({ extended: false, limit: '10kb', parameterLimit: 20 }));
 
-      // HARDENED: CORS defaults to a strict localhost allowlist. Upstream
-      // allowed `*` when OUTLOOK_MCP_CORS_ORIGIN was unset — we require
-      // explicit opt-in via env var to permit any non-localhost origin.
-      const localhostAllowlist = new Set([
-        'http://localhost',
-        'http://127.0.0.1',
-        'http://[::1]',
-      ]);
+      // HARDENED (N0 I5 + I6 fix 2026-05-16):
+      //
+      // CORS posture : DEFAULT-DENY. MCP clients (Claude Desktop, Claude Code,
+      // mcp-inspector) are NOT browsers — they don't apply SOP and don't need
+      // CORS approval. Allowing CORS to a Bearer-protected resource only
+      // helps browser-context attackers chain "exfiltrated Bearer token →
+      // cross-origin call to /mcp" (codex-style threat model, see N0 I5).
+      //
+      // I5 fix : the previous port-agnostic localhost allowlist matched
+      // `http://localhost:1337` against `http://localhost` — any local app
+      // (malicious Electron, browser extension) on any port reflected as
+      // valid origin. Now we either deny entirely (default) or accept ONLY
+      // the exact origin string the operator listed.
+      //
+      // I6 fix : '*' is now refused at boot (above) unless the operator
+      // explicitly opts in via OUTLOOK_MCP_CORS_ALLOW_WILDCARD=true.
       const configuredOrigin = process.env.OUTLOOK_MCP_CORS_ORIGIN;
-      if (configuredOrigin === '*') {
-        logger.warn(
-          'OUTLOOK_MCP_CORS_ORIGIN=* allows any origin to call the MCP endpoint. ' +
-            'This should only be used behind a trusted reverse proxy.'
-        );
-      }
 
       app.use((req, res, next) => {
         const requestOrigin = req.headers.origin;
         let allowOrigin: string | null = null;
 
-        if (configuredOrigin) {
-          // Operator explicitly picked an allowlist (or '*').
-          allowOrigin = configuredOrigin;
-        } else if (requestOrigin) {
-          // Default: accept only localhost origins. Match on scheme+host, port-agnostic.
-          try {
-            const parsed = new URL(requestOrigin);
-            const hostPart = `${parsed.protocol}//${parsed.hostname}`;
-            if (localhostAllowlist.has(hostPart)) {
-              allowOrigin = requestOrigin;
-            }
-          } catch {
-            // Malformed origin — ignore.
-          }
+        if (configuredOrigin === '*') {
+          // Wildcard explicitly approved via OUTLOOK_MCP_CORS_ALLOW_WILDCARD=true
+          // (else boot refused above). In wildcard mode the browser refuses
+          // to send Authorization anyway, so Allow-Headers MUST exclude it.
+          allowOrigin = '*';
+        } else if (configuredOrigin && requestOrigin === configuredOrigin) {
+          // Exact-origin match. Includes port + path-less host (origin is
+          // always scheme://host:port per RFC 6454).
+          allowOrigin = requestOrigin;
         }
+        // No fallback to "localhost any port" — that was N0 I5.
 
         if (allowOrigin) {
           res.header('Access-Control-Allow-Origin', allowOrigin);
-          res.header('Vary', 'Origin');
+          if (allowOrigin !== '*') {
+            res.header('Vary', 'Origin');
+          }
         }
         res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-        res.header(
-          'Access-Control-Allow-Headers',
-          'Origin, X-Requested-With, Content-Type, Accept, Authorization, mcp-protocol-version'
-        );
+        // Allow-Headers : Authorization included EXCEPT in wildcard mode
+        // (the browser would refuse to send it with '*' anyway, but some
+        // non-browser clients honor '*' — we make the contract explicit).
+        const allowHeaders =
+          allowOrigin === '*'
+            ? 'Origin, X-Requested-With, Content-Type, Accept, mcp-protocol-version'
+            : 'Origin, X-Requested-With, Content-Type, Accept, Authorization, mcp-protocol-version';
+        res.header('Access-Control-Allow-Headers', allowHeaders);
 
-        // Handle preflight requests
         if (req.method === 'OPTIONS') {
           res.sendStatus(allowOrigin ? 200 : 403);
           return;
@@ -363,8 +402,16 @@ class MicrosoftGraphServer {
 
       // OAuth Authorization Server Discovery
       app.get('/.well-known/oauth-authorization-server', async (req, res) => {
-        const protocol = req.secure ? 'https' : 'http';
-        const url = new URL(`${protocol}://${req.get('host')}`);
+        // HARDENED (N0 I3 fix 2026-05-16): prefer OUTLOOK_MCP_PUBLIC_URL over
+        // reflected Host header. RFC 8414 §2 forbids non-https issuers; the
+        // Host header is attacker-controlled and may be empty/spoofed.
+        // Boot guard above ensures publicUrl is present + https:// for any
+        // non-loopback bind, so this fallback to req.get('host') only fires
+        // for safe local dev contexts.
+        const url = publicUrl
+          ? new URL(publicUrl)
+          : new URL(`${req.secure ? 'https' : 'http'}://${req.get('host')}`);
+        res.set('Cache-Control', 'no-store'); // N0 I3 — prevent CDN caching wrong issuer
 
         const scopes = buildScopesFromEndpoints(this.options.orgMode, this.options.enabledTools);
 
@@ -389,8 +436,12 @@ class MicrosoftGraphServer {
 
       // OAuth Protected Resource Discovery
       app.get('/.well-known/oauth-protected-resource', async (req, res) => {
-        const protocol = req.secure ? 'https' : 'http';
-        const url = new URL(`${protocol}://${req.get('host')}`);
+        // HARDENED (N0 I3 fix 2026-05-16): same as oauth-authorization-server
+        // discovery — prefer OUTLOOK_MCP_PUBLIC_URL.
+        const url = publicUrl
+          ? new URL(publicUrl)
+          : new URL(`${req.secure ? 'https' : 'http'}://${req.get('host')}`);
+        res.set('Cache-Control', 'no-store');
 
         const scopes = buildScopesFromEndpoints(this.options.orgMode, this.options.enabledTools);
 

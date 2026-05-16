@@ -4,6 +4,20 @@ Toutes les modifications notables de ce projet sont documentées ici.
 Format inspiré de [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versionning : [SemVer](https://semver.org/lang/fr/spec/v2.0.0.html).
 
+## [0.2.1] — 2026-05-16 (security audit completion)
+
+### Security — N0 cross-review IMPORTANT findings fixés
+
+- **N0-I2 IMPORTANT (conf 86)** — /mcp Bearer middleware ne validait pas le token (pass-through). Refactor : `createBearerAuthMiddleware(verifier)` factory avec verifier injecté → Graph /me roundtrip à chaque requête. `verifyMicrosoftAccessToken` extrait en fonction standalone partagée entre SDK provider et nouveau middleware. 13 tests régression (scénarios : header missing/malformed, verifier reject sans leak token, happy path, attaques SQL injection/JWT forgé/payload géant).
+- **N0-I3 IMPORTANT (conf 82)** — Discovery endpoints reflect Host header. Fix : préférer `OUTLOOK_MCP_PUBLIC_URL` env > Host header. Boot guard exigeant PUBLIC_URL https:// si bind non-loopback. `Cache-Control: no-store` sur les deux discovery endpoints.
+- **N0-I4 IMPORTANT (conf 80)** — Trust-proxy IP canonicalization. `parseTrustedProxiesEnv` canonicalise via `normalizeIp` étendu (strip leading zeros IPv4 `192.168.001.001`→`192.168.1.1`, lowercase IPv6) avant validation `net.isIP()`. Entries invalides skip avec stderr warning explicite. Limitation : pas de canonicalisation RFC 5952 IPv6.
+- **N0-I5 IMPORTANT (conf 81)** — CORS port-agnostic. Refactor : default-deny CORS (MCP clients ne sont pas browsers, pas besoin de CORS). Si `OUTLOOK_MCP_CORS_ORIGIN` set → exact-match strict (incluant port). Plus de "localhost any port" fallback.
+- **N0-I6 IMPORTANT (conf 80)** — `OUTLOOK_MCP_CORS_ORIGIN=*` footgun. Refus boot sauf si `OUTLOOK_MCP_CORS_ALLOW_WILDCARD=true` explicite. En mode wildcard, `Authorization` retiré de `Allow-Headers` (cohérence avec contrat browser SOP).
+
+### Tests
+
+297 PASS (+28 nouveaux : 13 bearer-middleware, 7 normalizeIp/parseTrustedProxiesEnv, 8 régressions diverses).
+
 ## [Unreleased] — Lot B OAuth proxy hardened (Niveau B, pivot 2026-05-10)
 
 ### Architecture (2026-05-10 mid-Lot B pivot)
