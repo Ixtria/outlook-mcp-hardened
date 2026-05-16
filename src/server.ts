@@ -613,6 +613,17 @@ class MicrosoftGraphServer {
         }
       });
 
+      // HARDENED (N3 mcp-vault M1 2026-05-16): the SDK's `mcpAuthRouter`
+      // registers its own /.well-known, /register, /authorize, /token handlers.
+      // Our hand-rolled hardenings (registered above) are matched FIRST by
+      // Express because they were registered earlier. mcpAuthRouter only ever
+      // sees a request if our handlers did not respond — practically: edge
+      // SDK-specific paths (e.g. dynamic /.well-known variants we don't cover).
+      //
+      // For ANY path mcpAuthRouter handles, the provider's getClient() is
+      // consulted to validate redirect_uri. That's why oauth-provider.ts
+      // getClient() must return the registered-clients allowlist (N3 C1 fix)
+      // — it's the defense-in-depth filet de sécurité.
       app.use(
         mcpAuthRouter({
           provider: oauthProvider,
