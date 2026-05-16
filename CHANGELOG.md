@@ -4,21 +4,86 @@ Toutes les modifications notables de ce projet sont documentées ici.
 Format inspiré de [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versionning : [SemVer](https://semver.org/lang/fr/spec/v2.0.0.html).
 
-## [0.2.1] — 2026-05-16 (security audit completion)
+## [Unreleased]
 
-### Security — N0 cross-review IMPORTANT findings fixés
+### Planned v0.3
 
-- **N0-I2 IMPORTANT (conf 86)** — /mcp Bearer middleware ne validait pas le token (pass-through). Refactor : `createBearerAuthMiddleware(verifier)` factory avec verifier injecté → Graph /me roundtrip à chaque requête. `verifyMicrosoftAccessToken` extrait en fonction standalone partagée entre SDK provider et nouveau middleware. 13 tests régression (scénarios : header missing/malformed, verifier reject sans leak token, happy path, attaques SQL injection/JWT forgé/payload géant).
-- **N0-I3 IMPORTANT (conf 82)** — Discovery endpoints reflect Host header. Fix : préférer `OUTLOOK_MCP_PUBLIC_URL` env > Host header. Boot guard exigeant PUBLIC_URL https:// si bind non-loopback. `Cache-Control: no-store` sur les deux discovery endpoints.
-- **N0-I4 IMPORTANT (conf 80)** — Trust-proxy IP canonicalization. `parseTrustedProxiesEnv` canonicalise via `normalizeIp` étendu (strip leading zeros IPv4 `192.168.001.001`→`192.168.1.1`, lowercase IPv6) avant validation `net.isIP()`. Entries invalides skip avec stderr warning explicite. Limitation : pas de canonicalisation RFC 5952 IPv6.
-- **N0-I5 IMPORTANT (conf 81)** — CORS port-agnostic. Refactor : default-deny CORS (MCP clients ne sont pas browsers, pas besoin de CORS). Si `OUTLOOK_MCP_CORS_ORIGIN` set → exact-match strict (incluant port). Plus de "localhost any port" fallback.
-- **N0-I6 IMPORTANT (conf 80)** — `OUTLOOK_MCP_CORS_ORIGIN=*` footgun. Refus boot sauf si `OUTLOOK_MCP_CORS_ALLOW_WILDCARD=true` explicite. En mode wildcard, `Authorization` retiré de `Allow-Headers` (cohérence avec contrat browser SOP).
+- N0-O1 fix : hashAccount HMAC-SHA256 avec salt OS keychain
+- N0-O2 fix : injection-wrapper Unicode confusables
+- N0-O3 fix : logs path XDG
+- Tier 2 adversarial : property-based fast-check sur fonctions critiques + OWASP ZAP baseline scan CI
+- Optionnel : in-memory TTL cache verifier (perf Graph /me roundtrip)
 
-### Tests
+## [0.2.0] — 2026-05-16
 
-297 PASS (+28 nouveaux : 13 bearer-middleware, 7 normalizeIp/parseTrustedProxiesEnv, 8 régressions diverses).
+Première release majeure post-hardening fork. Couvre :
 
-## [Unreleased] — Lot B OAuth proxy hardened (Niveau B, pivot 2026-05-10)
+1. **Cadrage v0.2** — 2 ADRs (cross-LLM review grid + OAuth trust policy), threat model STRIDE, matrice MODES (stdio/http-loopback/http-public), SPECS OAuth v2 + v3 pivot, MIGRATION-PLAN, TICKETS, CONTRIBUTING.
+2. **Pivot architectural Niveau B** (ADR-0003 supersede ADR-0002) — OAuth proxy hardened vers Microsoft AAD, ~150 LOC ajoutés au lieu de ~1200 LOC AS intégré. Aucune nouvelle dépendance lourde (pas de SQLite, JOSE, eta, bcrypt).
+3. **3 modules pures réutilisables** : `redirect-uri.ts`, `scope.ts`, `trust-proxy.ts` — 100% test coverage, fonctions sans I/O.
+4. **CI sécurité Tier 0** : CodeQL + Semgrep + OSV-Scanner + Gitleaks + Dependabot + ESLint-plugin-security + License-checker.
+5. **Audit cross-LLM 4-school complet** — N0 (Claude pr-review-toolkit) + N3 (mcp-vault peer via bus agent-hub) avec 4 BLOCKERS + 9 IMPORTANT fixés (3 OBS reportées v0.3). N1 (codex) sandbox bypass à compléter post-publication.
+
+### Security — findings fixés (chronologique cross-reviews)
+
+**Tour 1 — modules pures (commits b60a690 + edb294d)**
+- B1 (codex conf 96) — `redirect_uri` wildcard allowlist → exact-match strict, refus subdomain/scheme/control-chars
+- B2 (codex conf 93) — DCR ouvert → `OAUTH_TRUST_MODE=registered-only` par défaut
+- I1 (codex conf 95) — scope intersection non normative → `requested ∩ registered ∩ KNOWN` + RFC 6749 §3.3 fallback
+- I2 (codex conf 92) — open redirect sur erreur /authorize → erreur LOCALE avant validation
+- I4 (codex conf 94) — TOCTOU codes/refresh → `BEGIN IMMEDIATE` (abandonné pivot Niveau B, no SQLite)
+- I7 (codex conf 79) — confusion alg/kid → alg=EdDSA figé (abandonné pivot Niveau B, no JWT local)
+- I8 (codex conf 90) — XFF rightmost faux → trusted-proxy model explicite
+- I9 (codex conf 87) — trusted-redirect exception → rejetée (ADR-0002 D5)
+- N0-B1 (conf 95) — userinfo bypass `https://attacker@claude.ai/...` → reject userinfo URL component
+- N0-I1 (conf 80) — DANGEROUS_PERCENT incomplet → +%0A/%0D/%2E
+- N0-I2 (conf 82) — IPv4-mapped IPv6 silent attribution → `normalizeIp` strip `::ffff:`
+
+**Tour 2 — pivot Niveau B + wiring (commits 446220b + 5d25d29 + 922c008)**
+- N0-B1 (conf 95) — `offline_access` silently dropped → META_SCOPES bypass post-intersection (refresh tokens préservés)
+- N0-B2 (conf 92) — `req.secure` cassé `trust proxy=false` → IP allowlist via `app.set('trust proxy', [...trustedProxies])`
+- N0-I1 (conf 90) — `Mail.ReadWrite` dropped (write tools cassés) → ajouté CLAUDE_AI_ALLOWED_SCOPES
+- N0-I2 (conf 88) — `User.Read` dropped → via META_SCOPES
+- N0-I3 (conf 82) — `allRegisteredRedirectUris()` rebuilt per request → hoist au boot
+- N0-O1 — boot guard 0.0.0.0 sans TRUSTED_PROXIES → refus boot avec message explicite
+- Refactor : extraction `src/oauth/http-routes.ts` pour rendre le wiring server.ts testable (25 tests intégration)
+
+**Tour 3 — N3 mcp-vault peer review (commit 2aafdd3)**
+- **N3-C1 CRITICAL (conf 90)** — `getClient()` hardcodé `http://localhost:3000/callback` → bypass exact-match via SDK `mcpAuthRouter`. Fix : retourne `[...allRegisteredRedirectUris()]`. **Faille que ni N0 Claude ni N1 codex n'avaient vue.**
+- N3-M1 — deux chemins OAuth parallèles non documentés → annotation
+- N3-M2 — `verifyAccessToken` pas annoté "aud non validé par design" → annotation ADR-0003 D2
+
+**Tour 4 — audit pré-publication final (commits 2250ccb + fd1270c + 98dd0db)**
+- **N0-B1 BLOCKER (conf 88)** — PKCE downgrade to `plain` accepté → refus si method !== 'S256', S256 forcé sur AAD
+- **N0-B2 BLOCKER (conf 92)** — `pkceStore` OOM via state-flood → MAX_PKCE_STORE_SIZE=10000 LRU + MAX_STATE_LENGTH=256 + setInterval sweep 60s
+- **N0-B3 BLOCKER (conf 82)** — body parser limits manquantes + qs nested → `express.json({limit:'10kb'})` + `urlencoded({extended:false, limit, parameterLimit:20})`
+- **N0-I1 (conf 90)** — UPN logué en clair → hashAccount avant emit
+- **N0-I2 (conf 86)** — /mcp Bearer non validé → `createBearerAuthMiddleware(verifier)` factory + verifier Graph /me roundtrip + 13 tests régression
+- **N0-I3 (conf 82)** — discovery reflect Host header → `OUTLOOK_MCP_PUBLIC_URL` strict + `Cache-Control: no-store` + boot guard https://
+- **N0-I4 (conf 80)** — trust-proxy IP canonicalization → `normalizeIp` étendu IPv4 leading-zero + IPv6 lowercase + entries invalides skip warn
+- **N0-I5 (conf 81)** — CORS port-agnostic → default-deny + exact-match strict
+- **N0-I6 (conf 80)** — CORS=* footgun → refus boot sans `OUTLOOK_MCP_CORS_ALLOW_WILDCARD=true` opt-in
+
+### Reporté v0.3 (OBSERVATIONS non-bloquantes)
+
+- N0-O1 — `hashAccount` SHA256 unsalted (reversible mainteneur connu) → HMAC-SHA256 avec salt OS keychain
+- N0-O2 — `injection-wrapper` regex naïf vs Unicode confusables → strip `<`/`>` → fullwidth OU base64
+- N0-O3 — `logs/` path fragile npm install -g → `envPaths('outlook-mcp').log`
+- Perf cache verifier (Graph /me roundtrip par requête) → in-memory TTL 60s si latency observée
+
+### Methodology
+
+Méthode review documentée dans `docs/adr/0001-cross-llm-review-grid.md` (transpose ADR mcp-vault v3.3). Schema Finding V3 anti-hallucination : tout BLOCKER/IMPORTANT exige un `repro_runtime` exécutable. 297 tests PASS, coverage `src/oauth/**` 100%, `src/security/**` 92%, `src/lib/trust-proxy.ts` 100%, `src/request-context.ts` 100%.
+
+Plans cross-review versionnés dans `docs/plans/`. Threat model STRIDE par surface dans `docs/threat-model/2026-05-10-oauth-as-threat-model.md`. Matrice modes dans `docs/MODES.md`.
+
+### Tooling
+
+- CI workflow `.github/workflows/security.yml` (CodeQL + Semgrep + OSV + Gitleaks + license-check, weekly cron Monday 06:00 Europe/Zurich)
+- `.github/dependabot.yml` (npm + github-actions, security updates priorisés)
+- `.github/CODEOWNERS` (zones sensibles @Ixtria review obligatoire)
+- `.githooks/pre-commit` (lint + typecheck + coverage si touche security/oauth)
+- `vitest.config.js` coverage thresholds ≥80% sur `src/oauth/**`, `src/security/**`, `src/request-context.ts`
 
 ### Architecture (2026-05-10 mid-Lot B pivot)
 
@@ -27,13 +92,14 @@ Versionning : [SemVer](https://semver.org/lang/fr/spec/v2.0.0.html).
 - Conséquences : ~100 LOC ajoutés au lieu de ~1200 ; zéro nouvelle dépendance (pas de `jose`, `better-sqlite3`, `eta`, `@node-rs/bcrypt`) ; time-to-v0.2.0 réduit de 9-14j à ~1j.
 - Les 3 modules pures déjà commités (`redirect-uri`, `scope`, `trust-proxy`) **restent valorisés** : ils sont wirés dans `oauth-provider.ts` et `request-context.ts` au lieu d'alimenter un AS standalone.
 
-### Added (planned v0.2.0)
+### Added (rétrospective, intégré dans [0.2.0])
 
 - ADR-0001 — Grille cross-LLM review N0+N1+N2+N3 (mcp-vault peer)
-- ADR-0002 — OAuth Trust Policy & AS Architecture : DCR registered-only par défaut, AS intégré (RFC 8693 token-exchange) côté ingress, MSAL device code conservé côté egress
+- ADR-0002 — OAuth Trust Policy & AS Architecture (superseded par ADR-0003)
+- ADR-0003 — Pivot vers OAuth proxy hardened (Niveau B)
 - THREAT-MODEL OAuth AS (STRIDE) + politiques de recovery
 - MODES.md — matrice stdio / http-loopback / http-public avec préconditions bloquantes
-- SPECS-OAUTH-MCP.md v2 — 13 findings codex intégrés
+- SPECS-OAUTH-MCP.md v2 — 13 findings codex intégrés (sections AS intégré superseded par ADR-0003)
 - MIGRATION-PLAN-FROM-MCP-VAULT.md v2 — retour mcp-vault peer review + correctifs codex
 - TICKETS.md — lots A-E en checklist atomique
 - `docs/plans/TEMPLATE.md` — template plan cross-review (format V3)
