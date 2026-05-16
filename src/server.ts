@@ -18,14 +18,12 @@ import type { CommandOptions } from './cli.ts';
 import { getSecrets, type AppSecrets } from './secrets.js';
 import { getCloudEndpoints } from './cloud-config.js';
 import { requestContext, parseTrustedProxiesEnv } from './request-context.js';
-import { validateRedirectUri } from './oauth/redirect-uri.js';
-import { intersectScopes, serializeScope } from './oauth/scope.js';
+import { allRegisteredRedirectUris, allRegisteredScopes } from './oauth/registered-clients.js';
 import {
-  allRegisteredRedirectUris,
-  allRegisteredScopes,
-  META_SCOPES,
-} from './oauth/registered-clients.js';
-import { parseScope } from './oauth/scope.js';
+  computeEffectiveScope,
+  createRegisterHandler,
+  validateAuthorizeRedirectUri,
+} from './oauth/http-routes.js';
 import { resolveClientIp } from './lib/trust-proxy.js';
 import crypto from 'node:crypto';
 
@@ -344,55 +342,13 @@ class MicrosoftGraphServer {
       });
 
       if (this.options.enableDynamicRegistration) {
-        // HARDENED (ADR-0003 D2, codex N1-B2 conf 94): /register exact-match
-        // validation against the static registered-clients allowlist. We do
-        // NOT persist new clients — DCR is a thin compatibility layer for
-        // Claude.ai which expects RFC 7591 discovery, but we only echo back
-        // metadata if EVERY redirect_uri it submits matches a known entry.
-        // `allowedRedirectUris` hoisted above (N0-I3).
-        app.post('/register', async (req, res) => {
-          const body = req.body ?? {};
-          const requested: unknown = body.redirect_uris;
-          if (!Array.isArray(requested) || requested.length === 0) {
-            res.status(400).json({
-              error: 'invalid_redirect_uri',
-              error_description: 'redirect_uris is required and must be a non-empty array',
-            });
-            return;
-          }
-          const invalid = requested.filter(
-            (u) => typeof u !== 'string' || !validateRedirectUri(u, allowedRedirectUris)
-          );
-          if (invalid.length > 0) {
-            logger.warn('Rejected /register: redirect_uri not in allowlist', {
-              invalid_count: invalid.length,
-              client_name: body.client_name,
-            });
-            res.status(400).json({
-              error: 'invalid_redirect_uri',
-              error_description:
-                'one or more redirect_uris are not in the registered-clients allowlist',
-            });
-            return;
-          }
-
-          const clientId = `mcp-client-${Date.now()}`;
-          logger.info('Client registration accepted', {
-            client_id: clientId,
-            client_name: body.client_name,
-            redirect_uris_count: requested.length,
-          });
-
-          res.status(201).json({
-            client_id: clientId,
-            client_id_issued_at: Math.floor(Date.now() / 1000),
-            redirect_uris: requested,
-            grant_types: body.grant_types || ['authorization_code', 'refresh_token'],
-            response_types: body.response_types || ['code'],
-            token_endpoint_auth_method: body.token_endpoint_auth_method || 'none',
-            client_name: body.client_name || 'MCP Client',
-          });
-        });
+        // HARDENED (ADR-0003 D2, codex N1-B2 conf 94): /register handler
+        // extracted into src/oauth/http-routes.ts for unit-testable wiring
+        // (N0-O3 cross-review). Allowlist + logger injected as deps.
+        app.post(
+          '/register',
+          createRegisterHandler({ allowedRedirectUris, logger })
+        );
       }
 
       // Authorization endpoint - redirects to Microsoft
@@ -406,25 +362,27 @@ class MicrosoftGraphServer {
           `${cloudEndpoints.authority}/${tenantId}/oauth2/v2.0/authorize`
         );
 
-        // HARDENED (ADR-0003 D2, codex B1 + I2): validate redirect_uri against
-        // the static registered-clients allowlist BEFORE forwarding to Microsoft.
-        // Without this, the AS-proxy is an open redirect into the AAD callback
-        // sequence. Errors are LOCAL (no Location header) per codex I2 anti
-        // open-redirect: at this point we have not confirmed redirect_uri is
-        // safe to redirect TO, so we render an error inline.
-        const clientRedirectUri = url.searchParams.get('redirect_uri');
-        if (!clientRedirectUri) {
-          res.status(400).type('text/plain').send('invalid_request: redirect_uri is required');
-          return;
-        }
-        if (!validateRedirectUri(clientRedirectUri, allowedRedirectUris)) {
-          logger.warn('Rejected /authorize: redirect_uri not in allowlist', {
-            client_ip: (req as Request & { clientIp?: string }).clientIp,
-          });
+        // HARDENED (ADR-0003 D2, codex B1 + I2): validate redirect_uri via
+        // extracted helper. Errors are LOCAL (no Location header) — anti
+        // open-redirect (codex I2).
+        const redirectCheck = validateAuthorizeRedirectUri(
+          url.searchParams.get('redirect_uri'),
+          allowedRedirectUris
+        );
+        if (!redirectCheck.ok) {
+          if (redirectCheck.reason === 'not_in_allowlist') {
+            logger.warn('Rejected /authorize: redirect_uri not in allowlist', {
+              client_ip: (req as Request & { clientIp?: string }).clientIp,
+            });
+          }
           res
             .status(400)
             .type('text/plain')
-            .send('invalid_request: redirect_uri is not in the registered-clients allowlist');
+            .send(
+              redirectCheck.reason === 'missing'
+                ? 'invalid_request: redirect_uri is required'
+                : 'invalid_request: redirect_uri is not in the registered-clients allowlist'
+            );
           return;
         }
 
@@ -453,32 +411,26 @@ class MicrosoftGraphServer {
           }
         });
 
-        // HARDENED (ADR-0003 D2, codex I1 + N1-I1/I2/I3, N0-cross-review B1/I1/I2):
-        // intersect requested scope with registered-clients allowlist (drops
-        // Files.Read et al.) AND with the writePolicy-derived KNOWN Graph
-        // scopes. META_SCOPES (offline_access, openid, profile, User.Read)
-        // bypass the KNOWN filter — they are OIDC/refresh protocol scopes,
-        // not Graph permissions, and would otherwise be dropped because
-        // endpoints.json doesn't declare them (N0 B1 conf 95, I2 conf 88).
+        // HARDENED (ADR-0003 D2): scope intersection delegated to the
+        // extracted computeEffectiveScope() helper (src/oauth/http-routes.ts).
+        // Combines requested ∩ registered ∩ KNOWN + META_SCOPES bypass for
+        // OIDC/refresh protocol scopes (N0-B1/I2 fix).
         const requestedScope = url.searchParams.get('scope') ?? undefined;
-        const knownScopes = new Set(
-          buildScopesFromEndpoints(this.options.orgMode, this.options.enabledTools, httpWritePolicy)
-        );
-        const effectiveScopes = intersectScopes(
-          requestedScope,
+        const scopeResult = computeEffectiveScope(requestedScope, {
+          allowedRedirectUris,
           registeredScopesString,
-          knownScopes
-        );
-        // Add META_SCOPES that survived requested ∩ registered (skipping KNOWN).
-        const requestedTokens = parseScope(requestedScope);
-        const requestedFallback = requestedTokens.size === 0 ? allRegisteredScopes() : requestedTokens;
-        for (const meta of META_SCOPES) {
-          if (requestedFallback.has(meta) && allRegisteredScopes().has(meta)) {
-            effectiveScopes.add(meta);
-          }
-        }
-        if (effectiveScopes.size > 0) {
-          microsoftAuthUrl.searchParams.set('scope', serializeScope(effectiveScopes));
+          knownScopes: () =>
+            new Set(
+              buildScopesFromEndpoints(
+                this.options.orgMode,
+                this.options.enabledTools,
+                httpWritePolicy
+              )
+            ),
+          logger,
+        });
+        if (scopeResult.effective !== null) {
+          microsoftAuthUrl.searchParams.set('scope', scopeResult.effective);
         } else {
           logger.warn('Rejected /authorize: empty scope intersection', {
             requested: requestedScope,
