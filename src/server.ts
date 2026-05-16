@@ -28,6 +28,35 @@ import { resolveClientIp } from './lib/trust-proxy.js';
 import crypto from 'node:crypto';
 
 /**
+ * Maximum PKCE store size (N0 B2 BLOCKER fix 2026-05-16). The store is keyed
+ * by attacker-controlled `state`, so we cap the Map to prevent unbounded
+ * memory growth from flood attacks. When full, the oldest entry is evicted.
+ * 10_000 × ~250 bytes ≈ 2.5 MB upper bound on store memory.
+ */
+const MAX_PKCE_STORE_SIZE = 10_000;
+
+/**
+ * Maximum `state` parameter length (N0 B2 BLOCKER fix 2026-05-16). Bounds the
+ * attacker's ability to pad state with megabytes of data. 256 chars is well
+ * above any legitimate use (typical OAuth state is 32-64 bytes of entropy).
+ */
+const MAX_STATE_LENGTH = 256;
+
+/**
+ * Periodic pkceStore sweep interval (N0 B2 BLOCKER fix). The original
+ * eviction-on-insert pattern leaked entries if /authorize traffic stopped
+ * after a flood. This interval-driven sweep runs every minute regardless
+ * of request volume.
+ */
+const PKCE_SWEEP_INTERVAL_MS = 60_000;
+
+/**
+ * pkceStore entry TTL (10 minutes). OAuth authorization codes are exchanged
+ * within seconds in practice; 10 min is generous slack for slow consent UX.
+ */
+const PKCE_ENTRY_TTL_MS = 10 * 60 * 1000;
+
+/**
  * Parse HTTP option into host and port components.
  * Supports formats: "host:port", ":port", "port"
  * @param httpOption - The HTTP option value (string or boolean)
@@ -200,6 +229,24 @@ class MicrosoftGraphServer {
         throw new Error(msg);
       }
 
+      // HARDENED (N0 B2 BLOCKER fix 2026-05-16): interval-driven pkceStore
+      // sweep. Independent of request volume, so the store cannot accumulate
+      // stale entries after a flood subsides.
+      const pkceSweepHandle = setInterval(() => {
+        const now = Date.now();
+        let evicted = 0;
+        for (const [key, value] of this.pkceStore) {
+          if (now - value.createdAt > PKCE_ENTRY_TTL_MS) {
+            this.pkceStore.delete(key);
+            evicted++;
+          }
+        }
+        if (evicted > 0) {
+          logger.info(`pkceStore: swept ${evicted} expired entries`);
+        }
+      }, PKCE_SWEEP_INTERVAL_MS);
+      pkceSweepHandle.unref(); // do not keep the event loop alive solely for this
+
       const app = express();
       // HARDENED (ADR-0003 D6, codex N1-B1 conf 96 + N0-B2 conf 92):
       // Replace permissive `trust proxy=true` (which trusts XFF from any peer)
@@ -224,8 +271,12 @@ class MicrosoftGraphServer {
         (req as Request & { clientIp?: string }).clientIp = clientIp;
         next();
       });
-      app.use(express.json());
-      app.use(express.urlencoded({ extended: true }));
+      // HARDENED (N0 B3 BLOCKER fix 2026-05-16): explicit body size + parser
+      // safety. OAuth requests are tiny (a few KB at most). `extended: false`
+      // uses Node's safer `querystring` parser (no qs prototype-pollution
+      // surface). `parameterLimit: 20` is well above any legitimate use.
+      app.use(express.json({ limit: '10kb' }));
+      app.use(express.urlencoded({ extended: false, limit: '10kb', parameterLimit: 20 }));
 
       // HARDENED: CORS defaults to a strict localhost allowlist. Upstream
       // allowed `*` when OUTLOOK_MCP_CORS_ORIGIN was unset — we require
@@ -391,6 +442,38 @@ class MicrosoftGraphServer {
         const clientCodeChallengeMethod = url.searchParams.get('code_challenge_method');
         const state = url.searchParams.get('state');
 
+        // HARDENED (N0 B1 BLOCKER conf 88 2026-05-16): refuse PKCE method=plain.
+        // Discovery advertises `code_challenge_methods_supported: ['S256']` only
+        // — accepting `plain` here would be a silent downgrade defeating
+        // PKCE's protection for public clients (RFC 7636 §4.4 explicitly
+        // discourages plain).
+        if (clientCodeChallengeMethod && clientCodeChallengeMethod !== 'S256') {
+          logger.warn('Rejected /authorize: PKCE method not S256', {
+            method: clientCodeChallengeMethod,
+            client_ip: (req as Request & { clientIp?: string }).clientIp,
+          });
+          res
+            .status(400)
+            .type('text/plain')
+            .send('invalid_request: code_challenge_method must be S256');
+          return;
+        }
+
+        // HARDENED (N0 B2 BLOCKER conf 92 2026-05-16): bound the `state`
+        // string length to prevent attackers padding it to MB to amplify
+        // the pkceStore OOM vector.
+        if (state && state.length > MAX_STATE_LENGTH) {
+          logger.warn('Rejected /authorize: state too long', {
+            length: state.length,
+            client_ip: (req as Request & { clientIp?: string }).clientIp,
+          });
+          res
+            .status(400)
+            .type('text/plain')
+            .send('invalid_request: state parameter exceeds maximum length');
+          return;
+        }
+
         // Forward parameters that Microsoft OAuth 2.0 v2.0 supports,
         // but NOT code_challenge/code_challenge_method — we generate our own for Microsoft.
         // NOTE: `scope` is handled separately below (intersection, not forward-as-is).
@@ -452,20 +535,26 @@ class MicrosoftGraphServer {
             .update(serverCodeVerifier)
             .digest('base64url');
 
+          // HARDENED (N0 B2 BLOCKER fix 2026-05-16): bounded LRU semantics
+          // before insertion to prevent OOM via state-flood. JS Map preserves
+          // insertion order, so deleting the first key is equivalent to
+          // evicting the oldest.
+          if (this.pkceStore.size >= MAX_PKCE_STORE_SIZE) {
+            const oldestKey = this.pkceStore.keys().next().value;
+            if (oldestKey !== undefined) {
+              this.pkceStore.delete(oldestKey);
+              logger.warn('pkceStore at capacity — evicted oldest entry', {
+                size: MAX_PKCE_STORE_SIZE,
+              });
+            }
+          }
+
           this.pkceStore.set(state, {
             clientCodeChallenge,
             clientCodeChallengeMethod: clientCodeChallengeMethod || 'S256',
             serverCodeVerifier,
             createdAt: Date.now(),
           });
-
-          // Clean up entries older than 10 minutes
-          const now = Date.now();
-          for (const [key, value] of this.pkceStore) {
-            if (now - value.createdAt > 10 * 60 * 1000) {
-              this.pkceStore.delete(key);
-            }
-          }
 
           // Send our server-generated code_challenge to Microsoft
           microsoftAuthUrl.searchParams.set('code_challenge', serverCodeChallenge);
@@ -475,11 +564,13 @@ class MicrosoftGraphServer {
             state: state.substring(0, 8) + '...',
           });
         } else if (clientCodeChallenge) {
-          // No state to key on — fall back to forwarding directly (Claude Code path)
+          // HARDENED (N0 B1 fix 2026-05-16): no state to key on (Claude Code
+          // stdio path) — forward challenge but FORCE method=S256. Plain
+          // was already rejected at the top of this handler, so the only
+          // way to land here with a non-S256 method is the absence of the
+          // method param entirely, in which case S256 is the correct default.
           microsoftAuthUrl.searchParams.set('code_challenge', clientCodeChallenge);
-          if (clientCodeChallengeMethod) {
-            microsoftAuthUrl.searchParams.set('code_challenge_method', clientCodeChallengeMethod);
-          }
+          microsoftAuthUrl.searchParams.set('code_challenge_method', 'S256');
         }
 
         // Use our Microsoft app's client_id
