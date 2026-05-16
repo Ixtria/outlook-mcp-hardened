@@ -1,0 +1,12 @@
+# OWASP ZAP rule configuration for outlook-mcp-hardened.
+# Format: rule_id\tWARN|FAIL|IGNORE\tcomment
+#
+# Most rules at WARN by default. The ones below are tuned for our context :
+# unauthenticated baseline scan against the discovery endpoint + boot probe.
+# /mcp itself requires Bearer auth so ZAP cannot scan its body without
+# credentials — that's by design (N0 I2 fix).
+
+10038	IGNORE	Content Security Policy header — discovery JSON has no CSP needed
+10063	IGNORE	Permissions-Policy missing — not relevant for OAuth discovery JSON
+10027	IGNORE	Information Disclosure - Suspicious Comments — JSDoc comments are intentional
+10096	IGNORE	Timestamp Disclosure — discovery has no timestamps anyway

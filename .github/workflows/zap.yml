@@ -1,0 +1,73 @@
+name: ZAP Baseline Scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 7 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  security-events: write
+
+jobs:
+  zap-baseline:
+    name: OWASP ZAP baseline scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Generate Graph client
+        run: npm run generate
+        env:
+          NPM_CONFIG_MIN_RELEASE_AGE: '0'
+
+      - name: Build
+        run: npm run build
+
+      - name: Start outlook-mcp HTTP in background
+        run: |
+          MS365_MCP_CLIENT_ID=zap-scan-fake-client \
+          MS365_MCP_TENANT_ID=common \
+          node dist/index.js --http 127.0.0.1:3000 -v > /tmp/server.log 2>&1 &
+          SERVER_PID=$!
+          echo "SERVER_PID=$SERVER_PID" >> $GITHUB_ENV
+          # wait for boot — discovery endpoint is the readiness probe
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:3000/.well-known/oauth-authorization-server > /dev/null; then
+              echo "Server up after $i seconds"
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Show server log (debug)
+        run: cat /tmp/server.log || true
+
+      - name: ZAP Baseline Scan
+        uses: zaproxy/action-baseline@v0.14.0
+        with:
+          target: 'http://127.0.0.1:3000/.well-known/oauth-authorization-server'
+          rules_file_name: '.zap/rules.tsv'
+          cmd_options: '-a -j'
+          fail_action: false
+          allow_issue_writing: false
+
+      - name: Stop server
+        if: always()
+        run: |
+          if [ -n "${SERVER_PID:-}" ]; then kill $SERVER_PID || true; fi
