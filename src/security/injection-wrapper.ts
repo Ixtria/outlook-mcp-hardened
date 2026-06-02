@@ -42,25 +42,37 @@ const WARNING = [
 
 /**
  * Unicode codepoints stripped from untrusted content. They are invisible or
- * formatting-only chars whose only purpose in this context is obfuscation :
+ * formatting-only chars whose only purpose in this context is obfuscation.
  *
+ * N0-I1 fix (2026-06-02) : extended to cover Plane-14 language tag chars
+ * (U+E0000-U+E007F) which are the vehicle for the 2024 "Tag Space" prompt
+ * injection research, plus Mongolian Vowel Separator (U+180E) and the
+ * invisible math operators (U+2061-U+2064).
+ *
+ * Categories covered :
  *   - U+00AD soft hyphen
- *   - U+200B zero-width space
- *   - U+200C zero-width non-joiner
- *   - U+200D zero-width joiner
- *   - U+200E LTR mark
- *   - U+200F RTL mark
+ *   - U+180E Mongolian Vowel Separator (reclassified out of Zs in U6.3
+ *     but still widely used in steganography)
+ *   - U+200B-U+200D zero-width space / NJ / joiner
+ *   - U+200E-U+200F LTR/RTL marks
  *   - U+202A-U+202E BiDi embedding/override controls
- *   - U+2066-U+2069 BiDi isolates (RFC 9839 calls these out for security)
+ *   - U+2060 word joiner
+ *   - U+2061-U+2064 FUNCTION APPLICATION / INVISIBLE TIMES / SEPARATOR / PLUS
+ *   - U+2066-U+2069 BiDi isolates (RFC 9839 security considerations)
  *   - U+FEFF byte-order mark / zero-width no-break space
- *   - U+FE00-U+FE0F variation selectors (allow zalgo-like obfuscation of tags)
+ *   - U+FE00-U+FE0F variation selectors (zalgo / tag obfuscation)
+ *   - U+E0000-U+E007F language tag chars (Plane 14 steganography 2024 CVEs)
  *
  * NOT stripped (legitimate text content) : combining diacritics, emoji,
  * regular whitespace, line breaks. We trust the email body to be human-
  * readable; we only sanitize the chars whose presence is a red flag.
+ *
+ * Implementation note : uses ES2018 /u flag to support U+E0000-U+E007F
+ * (above BMP). Older Node requires the `🌀` surrogate-pair form;
+ * Node 20 + TS strict target ES2022 lets us write `\u{...}`.
  */
 const UNICODE_OBFUSCATION_RE =
-  /[­​-‏‪-‮⁦-⁩﻿︀-️]/g;
+  /[­᠎​-‏‪-‮⁠-⁤⁦-⁩﻿︀-️]|[\u{E0000}-\u{E007F}]/gu;
 
 function stripUnicodeObfuscation(content: string): string {
   return content.replace(UNICODE_OBFUSCATION_RE, '');
@@ -68,10 +80,19 @@ function stripUnicodeObfuscation(content: string): string {
 
 /**
  * Match `<untrusted_content>` / `</untrusted_content>` even when an attacker
- * inserts whitespace inside the angle brackets, between the slash and the
- * tag name, or around the name itself. Case-insensitive per HTML convention.
+ * inserts whitespace OR any Unicode Default_Ignorable_Code_Point inside the
+ * angle brackets, between the slash and the tag name, or around the name
+ * itself. Case-insensitive per HTML convention.
+ *
+ * N0-I1 defense in depth (2026-06-02) : even if a future codepoint slips
+ * past the UNICODE_OBFUSCATION_RE strip pass, this regex still neutralises
+ * the tag because it accepts ANY default-ignorable char between brackets
+ * and the tag name (not just ECMAScript \s, which has a limited closed set).
+ * Combines /u flag with \p{Default_Ignorable_Code_Point} Unicode property
+ * — supported in V8 ≥ 6.4 (Node ≥ 10).
  */
-const WRAPPER_TAG_RE = /<\s*\/?\s*untrusted_content\s*>/gi;
+const WRAPPER_TAG_RE =
+  /<[\s\p{Default_Ignorable_Code_Point}]*\/?[\s\p{Default_Ignorable_Code_Point}]*untrusted_content[\s\p{Default_Ignorable_Code_Point}]*>/giu;
 
 function neutraliseTags(content: string): string {
   // Replace the opening `<` with a fullwidth `＜` (U+FF1C) so the result is

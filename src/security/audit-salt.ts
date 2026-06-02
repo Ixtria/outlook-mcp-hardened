@@ -24,11 +24,15 @@
  */
 
 import {
+  closeSync,
+  constants as fsConstants,
   existsSync,
+  fstatSync,
   mkdirSync,
-  readFileSync,
-  writeFileSync,
+  openSync,
+  readSync,
   statSync,
+  writeSync,
   chmodSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -48,42 +52,98 @@ let cachedSalt: Buffer | null = null;
  * Returns the audit salt, generating + persisting it on first call.
  * Synchronous by design : caller (`hashAccount`) is on the hot path of every
  * audit emit and cannot afford an async hop.
+ *
+ * N0-I2 fix (2026-06-02) : every file open uses `O_NOFOLLOW` so a pre-planted
+ * symlink at the salt path cannot redirect our writes to an attacker-chosen
+ * location. Same for the read side — if the salt path is a symlink, we
+ * refuse to use it.
+ *
+ * N0-I3 fix (2026-06-02) : the test-override env var `OUTLOOK_MCP_AUDIT_
+ * SALT_HEX` is refused in production (`NODE_ENV === 'production'`) — its
+ * sole legitimate purpose is test determinism, and a leaked CI/Docker/k8s
+ * ConfigMap entry would otherwise silently share the HMAC key across
+ * installations, defeating the per-install pseudonymity invariant.
  */
 export function getAuditSalt(): Buffer {
   if (cachedSalt) return cachedSalt;
 
-  // Test override — DETERMINISTIC, production code must not set this.
+  // Test override — DETERMINISTIC, production code MUST not set this.
   const envOverride = process.env.OUTLOOK_MCP_AUDIT_SALT_HEX;
   if (envOverride && envOverride.length === SALT_BYTES * 2) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error(
+        'OUTLOOK_MCP_AUDIT_SALT_HEX is set in production. ' +
+          'This env var exists only for test determinism and disables the ' +
+          'per-installation random salt design (cf. N0-I3 audit). Unset it ' +
+          'and let the server generate + persist a salt in XDG_STATE_HOME.'
+      );
+    }
     cachedSalt = Buffer.from(envOverride, 'hex');
     return cachedSalt;
   }
 
   const saltPath = getSaltPath();
   if (existsSync(saltPath)) {
-    const buf = readFileSync(saltPath);
-    if (buf.length !== SALT_BYTES) {
-      throw new Error(
-        `Audit salt at ${saltPath} has unexpected length ${buf.length} (expected ${SALT_BYTES}). ` +
-          `Refusing to use — delete the file to regenerate, but ALL existing log entries will become un-correlatable.`
-      );
-    }
-    // Defensive : if perms were widened externally, narrow back to 0600.
+    // O_NOFOLLOW : if saltPath is a symlink, openSync throws ELOOP. This
+    // blocks a pre-planted-symlink attacker from redirecting our reads.
+    let fd: number;
     try {
-      const stat = statSync(saltPath);
-      const mode = stat.mode & 0o777;
-      if (mode !== 0o600) chmodSync(saltPath, 0o600);
-    } catch {
-      // Best-effort hardening; not fatal.
+      fd = openSync(saltPath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ELOOP') {
+        throw new Error(
+          `Audit salt at ${saltPath} is a symlink — refusing to follow ` +
+            `(N0-I2 symlink-attack defense). Remove the symlink and let the ` +
+            `server regenerate a real file.`
+        );
+      }
+      throw err;
     }
-    cachedSalt = buf;
-    return cachedSalt;
+    try {
+      const stat = fstatSync(fd);
+      if (stat.size !== SALT_BYTES) {
+        throw new Error(
+          `Audit salt at ${saltPath} has unexpected length ${stat.size} (expected ${SALT_BYTES}). ` +
+            `Refusing to use — delete the file to regenerate, but ALL existing log entries will become un-correlatable.`
+        );
+      }
+      const buf = Buffer.alloc(SALT_BYTES);
+      readSync(fd, buf, 0, SALT_BYTES, 0);
+      // Defensive : narrow perms back to 0600 if widened externally.
+      const mode = stat.mode & 0o777;
+      if (mode !== 0o600) {
+        try {
+          chmodSync(saltPath, 0o600);
+        } catch {
+          // Best-effort hardening; not fatal.
+        }
+      }
+      cachedSalt = buf;
+      return cachedSalt;
+    } finally {
+      closeSync(fd);
+    }
   }
 
-  // First use — generate + persist.
+  // First use — generate + persist with O_NOFOLLOW + O_EXCL (atomic create,
+  // fails if any file exists at the path — defense against TOCTOU between
+  // the existsSync check above and this open call).
   const salt = randomBytes(SALT_BYTES);
   mkdirSync(dirname(saltPath), { recursive: true, mode: 0o700 });
-  writeFileSync(saltPath, salt, { mode: 0o600 });
+  const fd = openSync(
+    saltPath,
+    fsConstants.O_WRONLY |
+      fsConstants.O_CREAT |
+      fsConstants.O_EXCL |
+      (fsConstants.O_NOFOLLOW ?? 0),
+    0o600
+  );
+  try {
+    writeSync(fd, salt);
+  } finally {
+    closeSync(fd);
+  }
   cachedSalt = salt;
   return cachedSalt;
 }

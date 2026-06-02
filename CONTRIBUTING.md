@@ -19,11 +19,18 @@ npm run verify   # generate + lint + typecheck + build + test:coverage
 
 Coverage cible ≥80% sur `src/security/**`, `src/oauth/**`, `src/request-context.ts`. Le seuil est strict, le build CI échoue sinon.
 
-### Activer le pre-commit hook (recommandé)
+### Activer le pre-commit hook (recommandé pour contributeurs Ixtria)
 
 ```bash
-git config core.hooksPath .githooks
+npm run setup-hooks
+# équivalent à : git config core.hooksPath .githooks
 ```
+
+**Note N4-I4 (2026-06-02)** : ce hook n'est PAS activé par le `npm install`
+du package par un consumer externe (le script `prepare` a été retiré du
+package.json pour éviter de modifier silencieusement le `.git/config` de
+l'utilisateur qui installerait outlook-mcp-hardened comme dépendance). Si
+tu contribues à ce repo, lance manuellement la commande ci-dessus.
 
 Le hook lance lint + typecheck sur tout commit touchant du TS, et la suite de tests si tu touches `src/security/` ou `src/oauth/`. Désactivable ponctuellement avec `SKIP_PRECOMMIT=1 git commit`.
 

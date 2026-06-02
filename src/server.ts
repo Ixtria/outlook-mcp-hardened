@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { mcpAuthRouter } from '@modelcontextprotocol/sdk/server/auth/router.js';
-import express, { Request, Response } from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import logger, { enableConsoleLogging } from './logger.js';
 import { registerAuthTools } from './auth-tools.js';
 import { registerGraphTools, registerDiscoveryTools } from './graph-tools.js';
@@ -400,18 +400,21 @@ class MicrosoftGraphServer {
         await verifyMicrosoftAccessToken(token, secrets.cloudType, secrets.clientId, authManager);
       });
 
+      // HARDENED (N4-I1 fix 2026-06-02): build a fixed issuer URL once at
+      // boot. NEVER reflect req.get('host') — that's attacker-controlled
+      // and a DNS-rebinding vector even on loopback. If PUBLIC_URL is set
+      // we use it; otherwise we hardcode `http://<bound-host>:<port>` from
+      // the actual listen socket config (host + port are known here).
+      const issuerUrl = publicUrl
+        ? new URL(publicUrl)
+        : new URL(`http://${host ?? '127.0.0.1'}:${port}`);
+
       // OAuth Authorization Server Discovery
-      app.get('/.well-known/oauth-authorization-server', async (req, res) => {
-        // HARDENED (N0 I3 fix 2026-05-16): prefer OUTLOOK_MCP_PUBLIC_URL over
-        // reflected Host header. RFC 8414 §2 forbids non-https issuers; the
-        // Host header is attacker-controlled and may be empty/spoofed.
-        // Boot guard above ensures publicUrl is present + https:// for any
-        // non-loopback bind, so this fallback to req.get('host') only fires
-        // for safe local dev contexts.
-        const url = publicUrl
-          ? new URL(publicUrl)
-          : new URL(`${req.secure ? 'https' : 'http'}://${req.get('host')}`);
-        res.set('Cache-Control', 'no-store'); // N0 I3 — prevent CDN caching wrong issuer
+      app.get('/.well-known/oauth-authorization-server', async (_req, res) => {
+        // HARDENED (N0 I3 + N4-I1 fix 2026-06-02): fixed issuer URL only,
+        // never reflected. Cache-Control: no-store prevents CDN caching.
+        const url = issuerUrl;
+        res.set('Cache-Control', 'no-store');
 
         const scopes = buildScopesFromEndpoints(this.options.orgMode, this.options.enabledTools);
 
@@ -435,24 +438,29 @@ class MicrosoftGraphServer {
       });
 
       // OAuth Protected Resource Discovery
-      app.get('/.well-known/oauth-protected-resource', async (req, res) => {
-        // HARDENED (N0 I3 fix 2026-05-16): same as oauth-authorization-server
-        // discovery — prefer OUTLOOK_MCP_PUBLIC_URL.
-        const url = publicUrl
-          ? new URL(publicUrl)
-          : new URL(`${req.secure ? 'https' : 'http'}://${req.get('host')}`);
-        res.set('Cache-Control', 'no-store');
-
-        const scopes = buildScopesFromEndpoints(this.options.orgMode, this.options.enabledTools);
-
-        res.json({
-          resource: `${url.origin}/mcp`,
-          authorization_servers: [url.origin],
-          scopes_supported: scopes,
-          bearer_methods_supported: ['header'],
-          resource_documentation: `${url.origin}`,
-        });
-      });
+      // HARDENED (N4-I3 fix 2026-06-02): serve at BOTH the root path AND
+      // the resource-suffix path `/oauth-protected-resource/mcp`. RFC 9728
+      // §3.1 + MCP Authorization spec (draft 2025-11) require the suffix
+      // variant; some MCP clients fetch it first and don't fall back.
+      app.get(
+        [
+          '/.well-known/oauth-protected-resource',
+          '/.well-known/oauth-protected-resource/mcp',
+        ],
+        async (_req, res) => {
+          // HARDENED (N0 I3 + N4-I1 fix 2026-06-02): fixed issuer URL only.
+          const url = issuerUrl;
+          res.set('Cache-Control', 'no-store');
+          const scopes = buildScopesFromEndpoints(this.options.orgMode, this.options.enabledTools);
+          res.json({
+            resource: `${url.origin}/mcp`,
+            authorization_servers: [url.origin],
+            scopes_supported: scopes,
+            bearer_methods_supported: ['header'],
+            resource_documentation: `${url.origin}`,
+          });
+        }
+      );
 
       if (this.options.enableDynamicRegistration) {
         // HARDENED (ADR-0003 D2, codex N1-B2 conf 94): /register handler
@@ -930,6 +938,31 @@ class MicrosoftGraphServer {
       // Health check endpoint
       app.get('/', (req, res) => {
         res.send('Microsoft 365 MCP Server is running');
+      });
+
+      // HARDENED (N4-I2 fix 2026-06-02): global error handler that prevents
+      // Express's default stack-trace HTML response from leaking absolute
+      // filesystem paths, node_modules layout, Express version, and the
+      // operator's username on uncaught errors (PayloadTooLargeError, JSON
+      // parse errors, etc.). MUST be the LAST app.use call so it sees errors
+      // bubbling up from all earlier middleware and routes.
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      app.use((err: Error & { status?: number; statusCode?: number }, req: Request, res: Response, _next: NextFunction) => {
+        const status = err.status ?? err.statusCode ?? 500;
+        logger.warn('Express error caught by global handler', {
+          status,
+          message: err.message,
+          client_ip: (req as Request & { clientIp?: string }).clientIp,
+        });
+        if (!res.headersSent) {
+          res.status(status).json({
+            error: status >= 500 ? 'server_error' : 'request_error',
+            error_description:
+              status >= 500
+                ? 'Internal server error'
+                : err.message?.slice(0, 200) || 'Bad request',
+          });
+        }
       });
 
       if (host) {

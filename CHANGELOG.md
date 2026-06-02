@@ -6,13 +6,44 @@ Versionning : [SemVer](https://semver.org/lang/fr/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Planned v0.3
+### Breaking changes (Phase A + Phase B post-audit pré-publication)
 
-- N0-O1 fix : hashAccount HMAC-SHA256 avec salt OS keychain
-- N0-O2 fix : injection-wrapper Unicode confusables
-- N0-O3 fix : logs path XDG
-- Tier 2 adversarial : property-based fast-check sur fonctions critiques + OWASP ZAP baseline scan CI
-- Optionnel : in-memory TTL cache verifier (perf Graph /me roundtrip)
+- **Audit log `account` field prefix changes** : `sha256:<unsalted, 64 hex chars>` (v0.2.0) → `hmac-sha256:<salted, 32 hex chars>` (v0.3.0). The salt is per-installation, persisted at `$XDG_STATE_HOME/outlook-mcp/audit-salt` (mode 0600). Operators using grep/jq pipelines on the audit log MUST update field-extraction rules. Historical entries cannot be correlated with new ones because the hash domain changed — this is intentional pseudonymity hardening (N0-O1 + N0-I3 fix).
+- **`prepare` npm script removed** (N4-I4 fix). The pre-commit hook installation is now opt-in via `npm run setup-hooks` for contributors. Consumers installing outlook-mcp-hardened as a dependency are no longer silently modified.
+- **Vitest 4.x + @azure/msal-node 5.2.2** semver-major bumps to clear all known CVEs (npm audit 17 → 0).
+
+### Security — Phase A (cross-review N0 OBSERVATIONS resolved)
+
+- **N0-O1** hashAccount HMAC+salt — see Breaking changes above
+- **N0-O2** injection-wrapper Unicode confusables — strip BiDi controls + variation selectors + zero-width chars + **Plane-14 language tag chars U+E0000-U+E007F (2024 steganography CVE class)** + Mongolian Vowel Separator + invisible math operators. WRAPPER_TAG_RE extended with `\p{Default_Ignorable_Code_Point}` tolerance.
+- **N0-O3** logs path XDG-compliant (`$XDG_STATE_HOME/outlook-mcp/logs/` with fallback ~/.local/state). Compatible `npm install -g`.
+
+### Security — Phase B (cross-review N0 + N4 expert OAuth)
+
+- **N0-B1 BLOCKER (conf 95)** — `winston` file log stream was emitting recipient emails, mail bodies, and Graph URL path params in CLEAR TEXT to `mcp-server.log` (same XDG dir as audit-salt). Defeated the audit-logger HMAC pseudonymity. **Fix** : new `src/security/log-redactor.ts` winston format runs every log message through pattern-based redaction (emails → `[email:8hex]` via hashAccount, Bearer tokens → `Bearer [redacted]`, JWTs → `[JWT redacted]`, percent-encoded Graph emails → same correlation handle as plaintext).
+- **N4-B1 BLOCKER (conf 95)** — `/authorize` accepted requests without `code_challenge`, silent PKCE downgrade violating RFC 9700 §2.1.1. **Fix** : refuse with 400 invalid_request if `code_challenge` absent (PKCE mandatory for public clients).
+- **N4-B2 BLOCKER (conf 92)** — POST `/authorize` was caught by SDK `mcpAuthRouter` (mounted in fallthrough) which accepted arbitrary `client_id` + `scope` from the body. Combined with `getClient()` returning the registered redirect_uris allowlist for ANY client_id, an attacker could redirect to AAD with `scope=Files.ReadWrite.All` + `client_id=ATTACKER_CLIENT`. **Fix** : explicit `app.post('/authorize')` → 405 Method Not Allowed (Allow: GET). RFC 6749 §3.1 allows GET-only authorization endpoints.
+- **N4-B3 BLOCKER (conf 90)** — `verifyMicrosoftAccessToken` was calling `authManager.setOAuthToken(token)` which mutated global state, causing cross-user token leakage in multi-user HTTP scenarios. Not exploitable single-user. **Fix** : removed the mutation. `requestContext` AsyncLocalStorage is the sole token source per request.
+- **N0-I1** Unicode obfuscation strip set extended to U+180E, U+2060-U+2064, U+E0000-U+E007F. Tag regex now uses `\p{Default_Ignorable_Code_Point}` for defense-in-depth.
+- **N0-I2** Symlink attack defense on audit-salt + logs : `openSync` with `O_NOFOLLOW | O_EXCL` on writes, `O_NOFOLLOW` on reads. Pre-planted symlinks now fail with ELOOP error.
+- **N0-I3** `OUTLOOK_MCP_AUDIT_SALT_HEX` refused at runtime if `NODE_ENV === 'production'`.
+- **N4-I1** Discovery endpoints (`/.well-known/oauth-*`) now use a fixed issuer URL computed at boot from `host:port` or `OUTLOOK_MCP_PUBLIC_URL`, never reflected from the Host header. Closes DNS-rebinding vector on loopback bind.
+- **N4-I2** Global Express error handler returns sanitized JSON (`{error, error_description}`) instead of the default HTML stack trace leak.
+- **N4-I3** Protected Resource Metadata served at BOTH `/.well-known/oauth-protected-resource` AND `/.well-known/oauth-protected-resource/mcp` (RFC 9728 §3.1 + MCP Authorization 2025-11 draft).
+- **N4-I4** `prepare` npm script removed (see Breaking changes).
+
+### Reported v0.3 (OBSERVATIONS non-bloquantes)
+
+- N4-I5 `/token` endpoint returns 500 on AAD failures instead of 400 with proper `invalid_grant`/`invalid_request` per RFC 6749 §5.2
+- N4-I6 `pkceSweepHandle` setInterval not cleared on shutdown (memory hygiene)
+- N4-O1-O4 AAD error body verbose logging, token aud confusion (cross-app in same tenant), Graph /me roundtrip cache, keytar silent fallback
+- Architectural refactor : drop `mcpAuthRouter` mount entirely, implement all OAuth endpoints hand-rolled (N4 META recommendation — reduces SDK-imported attack surface by ~50%)
+
+### Planned v0.3 (continued)
+
+- Tier 2 adversarial extension : fuzzing inputs Unicode + property-based on log redactor
+- Optional : in-memory TTL cache verifier (perf Graph /me roundtrip)
+- Optional : keytar fail-loud in HTTP non-loopback mode
 
 ## [0.2.0] — 2026-05-16
 
