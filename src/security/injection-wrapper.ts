@@ -1,3 +1,12 @@
+/* eslint-disable security/detect-bidi-characters, security/detect-unsafe-regex, no-irregular-whitespace, no-misleading-character-class --
+ * ENTIRE FILE INTENTIONAL : this module is the anti-Unicode-obfuscation
+ * defense. By definition the source MUST contain the very codepoints we
+ * are stripping (so the parser sees them in the regex character class).
+ * Sanity is enforced by the test suite (test/injection-wrapper.test.ts),
+ * not the linter. Without these disables the file fails CI for doing
+ * exactly what it's supposed to do.
+ */
+
 /**
  * Wrap untrusted text (email bodies, subjects, attachment names…) so the
  * LLM sees a visible boundary and a do-not-follow instruction before any
@@ -8,9 +17,9 @@
  * N0 cross-review OBSERVATION O2 fix (2026-05-10) : the previous neutralise
  * regex only matched `<\/?untrusted_content>` literally. An attacker could
  * bypass it with :
- *   - Zero-width chars inserted in the tag : `<untrusted_content‍>`
- *   - Right-to-left override : `<‮…tnetnoc_detsurtnu/>`
- *   - Whitespace between the angle-brackets and the tag name : `< / untrusted_content >`
+ *   - Zero-width chars inserted in the tag
+ *   - Right-to-left override flipping visible text direction
+ *   - Whitespace between the angle-brackets and the tag name
  *   - Variation selectors or other Unicode formatting noise
  *
  * Defense applied here (in order) :
@@ -72,7 +81,7 @@ const WARNING = [
  * Node 20 + TS strict target ES2022 lets us write `\u{...}`.
  */
 const UNICODE_OBFUSCATION_RE =
-  /[­᠎​-‏‪-‮⁠-⁤⁦-⁩﻿︀-️]|[\u{E0000}-\u{E007F}]/gu;
+  /[­᠎​-‏‪-‮⁠-⁤⁦-⁩︀-️﻿]|[\u{E0000}-\u{E007F}]/gu;
 
 function stripUnicodeObfuscation(content: string): string {
   return content.replace(UNICODE_OBFUSCATION_RE, '');

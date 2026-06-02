@@ -90,6 +90,7 @@ export function getAuditSalt(): Buffer {
     try {
       fd = openSync(saltPath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
     } catch (err) {
+      // eslint-disable-next-line no-undef -- NodeJS namespace is a TypeScript-only ambient type, not a runtime global
       const code = (err as NodeJS.ErrnoException).code;
       if (code === 'ELOOP') {
         throw new Error(

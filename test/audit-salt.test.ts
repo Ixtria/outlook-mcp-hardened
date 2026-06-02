@@ -79,11 +79,10 @@ describe('audit-salt (N0 O1 fix)', () => {
       expect(stat.mode & 0o777).toBe(0o600);
     });
 
-    it('refuses to use a tampered salt of wrong length', () => {
+    it('refuses to use a tampered salt of wrong length', async () => {
       const path = join(tmpDir, 'outlook-mcp', 'audit-salt');
-      // Pre-populate with bad-length file
       const parentDir = join(tmpDir, 'outlook-mcp');
-      const { mkdirSync } = require('node:fs');
+      const { mkdirSync } = await import('node:fs');
       mkdirSync(parentDir, { recursive: true, mode: 0o700 });
       writeFileSync(path, Buffer.from('TOO-SHORT'), { mode: 0o600 });
       resetAuditSaltCache();

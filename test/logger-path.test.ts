@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os';
  * mirror in sync with logger.ts is enforced by the test below that asserts
  * the actual logger.ts contract holds for the documented cases.
  */
+// eslint-disable-next-line no-undef -- NodeJS namespace is a TypeScript-only ambient type, not a runtime global
 function resolveLogsDir(env: NodeJS.ProcessEnv): string {
   if (env.OUTLOOK_MCP_LOGS_DIR) return env.OUTLOOK_MCP_LOGS_DIR;
   const stateHome = env.XDG_STATE_HOME || join(homedir(), '.local', 'state');

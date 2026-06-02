@@ -6,6 +6,19 @@ Versionning : [SemVer](https://semver.org/lang/fr/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Planned v0.4
+
+- Architectural refactor : drop `mcpAuthRouter` mount, all OAuth endpoints hand-rolled (eliminates SDK-imported attack surface — N4 META recommendation)
+- HMAC verifier cache (60s TTL) to reduce Graph `/me` round-trips
+- `/token` endpoint RFC 6749 §5.2 compliance (currently 500 instead of 400 invalid_grant)
+- `pkceSweepHandle` graceful shutdown
+- AAD error body sanitization (trace_id, correlation_id stripped before log)
+- HTTP-public deployment kit : `docs/HANDOFF_INFRA.md` + nginx template + systemd unit hardened (Phase C)
+
+## [0.3.0] — 2026-06-02 — pre-publication security audit complete
+
+First public release after multi-school cross-LLM security audit. **8 BLOCKERS + 16 IMPORTANT fixed**, 380 tests passing, 0 npm-audit vulnerabilities, full Tier 0+1+2 audit history documented.
+
 ### Breaking changes (Phase A + Phase B post-audit pré-publication)
 
 - **Audit log `account` field prefix changes** : `sha256:<unsalted, 64 hex chars>` (v0.2.0) → `hmac-sha256:<salted, 32 hex chars>` (v0.3.0). The salt is per-installation, persisted at `$XDG_STATE_HOME/outlook-mcp/audit-salt` (mode 0600). Operators using grep/jq pipelines on the audit log MUST update field-extraction rules. Historical entries cannot be correlated with new ones because the hash domain changed — this is intentional pseudonymity hardening (N0-O1 + N0-I3 fix).
@@ -32,18 +45,16 @@ Versionning : [SemVer](https://semver.org/lang/fr/spec/v2.0.0.html).
 - **N4-I3** Protected Resource Metadata served at BOTH `/.well-known/oauth-protected-resource` AND `/.well-known/oauth-protected-resource/mcp` (RFC 9728 §3.1 + MCP Authorization 2025-11 draft).
 - **N4-I4** `prepare` npm script removed (see Breaking changes).
 
-### Reported v0.3 (OBSERVATIONS non-bloquantes)
+### Documentation
 
-- N4-I5 `/token` endpoint returns 500 on AAD failures instead of 400 with proper `invalid_grant`/`invalid_request` per RFC 6749 §5.2
-- N4-I6 `pkceSweepHandle` setInterval not cleared on shutdown (memory hygiene)
-- N4-O1-O4 AAD error body verbose logging, token aud confusion (cross-app in same tenant), Graph /me roundtrip cache, keytar silent fallback
-- Architectural refactor : drop `mcpAuthRouter` mount entirely, implement all OAuth endpoints hand-rolled (N4 META recommendation — reduces SDK-imported attack surface by ~50%)
+Phase D OSS-grade refonte client-agnostic :
 
-### Planned v0.3 (continued)
-
-- Tier 2 adversarial extension : fuzzing inputs Unicode + property-based on log redactor
-- Optional : in-memory TTL cache verifier (perf Graph /me roundtrip)
-- Optional : keytar fail-loud in HTTP non-loopback mode
+- `README.md` refondu — badges enrichis, positioning explicite "client-agnostic", tableau comparatif vs upstream complet, security posture matrice, audit history Tier 0+1+2
+- `INSTALL.md` (NEW, 257 lines) — Azure App Registration step-by-step, 3 modes d'exécution, env vars exhaustifs, Key Vault alternative, multi-account
+- `CLIENT_CONFIG.md` (NEW, 264 lines) — 100% client-agnostique : exemples pour Claude Desktop/Code/Cline/Continue/mcp-inspector/custom Node/Python SDK/openclaw/Hermès. MCP est un standard, on documente le contrat
+- `USAGE.md` (NEW, 302 lines) — 16 workflows couvrant mail/calendar/folders/rules/settings/attachments/shared-mailbox + patterns recommandés
+- `API_REFERENCE.md` (NEW, 183 lines) — catalogue 55 tools split par write policy + scope-to-tool quick reference
+- `TROUBLESHOOTING.md` (NEW, 243 lines) — auth/network/HTTP guards/OAuth proxy/multi-account/logs/build avec symptôme → cause → fix
 
 ## [0.2.0] — 2026-05-16
 
