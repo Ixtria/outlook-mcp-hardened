@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { auditLog, hashAccount, type AuditEntry } from '../src/security/audit-logger.js';
+import { resetAuditSaltCache } from '../src/security/audit-salt.js';
 
 describe('audit logger', () => {
   let stderrSpy: ReturnType<typeof vi.spyOn>;
@@ -8,11 +9,16 @@ describe('audit logger', () => {
   beforeEach(() => {
     stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    // Pin the audit salt to a deterministic value for tests (N0 O1 fix).
+    process.env.OUTLOOK_MCP_AUDIT_SALT_HEX = '00112233445566778899aabbccddeeff';
+    resetAuditSaltCache();
   });
 
   afterEach(() => {
     stderrSpy.mockRestore();
     stdoutSpy.mockRestore();
+    delete process.env.OUTLOOK_MCP_AUDIT_SALT_HEX;
+    resetAuditSaltCache();
   });
 
   describe('auditLog output channel', () => {
@@ -87,10 +93,23 @@ describe('audit logger', () => {
       expect(line).not.toContain('alice');
     });
 
-    it('outputs an account field prefixed with "sha256:"', () => {
+    it('outputs an account field prefixed with "hmac-sha256:" (N0 O1 fix)', () => {
       auditLog({ ...sampleEntry(), account: 'alice@example.com' });
       const parsed = parseEmitted(stderrSpy);
-      expect(parsed.account).toMatch(/^sha256:[a-f0-9]{64}$/);
+      // N0 O1 (2026-05-10): scheme switched from sha256: (unsalted, reversible)
+      // to hmac-sha256: (per-install salt, see audit-salt.ts).
+      expect(parsed.account).toMatch(/^hmac-sha256:[a-f0-9]{32}$/);
+    });
+
+    it('produces different hashes when salt differs (N0 O1 salt invariance test)', async () => {
+      // Different salts → different HMAC outputs for the same input.
+      process.env.OUTLOOK_MCP_AUDIT_SALT_HEX = '00112233445566778899aabbccddeeff';
+      resetAuditSaltCache();
+      const a = hashAccount('alice@example.com');
+      process.env.OUTLOOK_MCP_AUDIT_SALT_HEX = 'ffeeddccbbaa99887766554433221100';
+      resetAuditSaltCache();
+      const b = hashAccount('alice@example.com');
+      expect(a).not.toBe(b);
     });
 
     it('hashes deterministically (stable hash for a given input)', () => {
