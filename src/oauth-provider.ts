@@ -60,7 +60,19 @@ export async function verifyMicrosoftAccessToken(
     .slice(0, 16);
   logger.info(`OAuth token verified (user_id_hash=sha256:${upnHash})`);
 
-  await authManager.setOAuthToken(token);
+  // HARDENED (N4 B3 BLOCKER fix 2026-06-02): do NOT call
+  // `authManager.setOAuthToken(token)` here. The previous code mutated
+  // global AuthManager state (`oauthToken` field + `isOAuthMode=true`),
+  // which under any multi-user HTTP scenario meant the LAST request to
+  // succeed token verification clobbered the token used by ALL concurrent
+  // subsequent tool invocations. Cross-user data leak vector.
+  // The token is already propagated through AsyncLocalStorage via
+  // `requestContext` (cf. src/request-context.ts), which is per-request
+  // by construction. The global setOAuthToken was redundant + dangerous.
+  // Single-user perso Jimmy is NOT impacted (no concurrent users), but
+  // the OSS publication implicitly suggests HTTP multi-tenant via the
+  // "trusted reverse proxy" wording in CLAUDE.md — fail closed here.
+  void authManager; // keep param to preserve fn signature for callers
 
   // HARDENED (N3 mcp-vault M2): `aud` is intentionally NOT validated locally
   // per ADR-0003 (Niveau B proxy pattern). AAD tokens target Graph by design.

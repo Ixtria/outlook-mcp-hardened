@@ -464,6 +464,28 @@ class MicrosoftGraphServer {
         );
       }
 
+      // HARDENED (N4 B2 BLOCKER fix 2026-06-02): refuse POST /authorize
+      // outright. OAuth 2.0 RFC 6749 §3.1 says the authorization endpoint
+      // MUST support GET; POST is optional. We support only GET and reject
+      // POST with 405. Why : the SDK mcpAuthRouter mounted below catches
+      // POST /authorize and (a) doesn't validate client_id against our
+      // registered-clients allowlist, (b) doesn't enforce scope intersection,
+      // (c) doesn't enforce PKCE — all of which our hand-rolled GET handler
+      // does. Without this 405 interceptor, an attacker bypasses ALL our
+      // hardening by sending POST instead of GET.
+      app.post('/authorize', (req, res) => {
+        logger.warn('Rejected POST /authorize (only GET is supported)', {
+          client_ip: (req as Request & { clientIp?: string }).clientIp,
+        });
+        res
+          .status(405)
+          .set('Allow', 'GET')
+          .type('text/plain')
+          .send(
+            'method_not_allowed: /authorize accepts GET only. POST bypasses required PKCE+scope validation.'
+          );
+      });
+
       // Authorization endpoint - redirects to Microsoft
       // Implements two-leg PKCE: client↔server and server↔Microsoft are independent
       app.get('/authorize', async (req, res) => {
@@ -533,6 +555,23 @@ class MicrosoftGraphServer {
             .status(400)
             .type('text/plain')
             .send('invalid_request: state parameter exceeds maximum length');
+          return;
+        }
+
+        // HARDENED (N4 B1 BLOCKER fix 2026-06-02): PKCE is MANDATORY for
+        // public clients per RFC 9700 §2.1.1 (OAuth Security Best Current
+        // Practices). Our discovery advertises `code_challenge_methods_
+        // supported: ['S256']` only — accepting a PKCE-less request would
+        // be a silent contract violation, allowing AAD to fall back to
+        // non-PKCE flow if the app registration permits it. Fail closed.
+        if (!clientCodeChallenge) {
+          logger.warn('Rejected /authorize: missing code_challenge (PKCE mandatory)', {
+            client_ip: (req as Request & { clientIp?: string }).clientIp,
+          });
+          res
+            .status(400)
+            .type('text/plain')
+            .send('invalid_request: code_challenge is required (PKCE mandatory)');
           return;
         }
 
