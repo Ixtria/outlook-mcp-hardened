@@ -1,187 +1,202 @@
-# @ixtria/outlook-mcp-hardened
+# `@ixtria/outlook-mcp-hardened`
 
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
-[![node](https://img.shields.io/badge/node-%3E%3D20-green.svg)](https://nodejs.org/)
-[![MCP](https://img.shields.io/badge/protocol-MCP-purple.svg)](https://modelcontextprotocol.io/)
+[![node](https://img.shields.io/badge/node-%E2%89%A520-green.svg)](https://nodejs.org/)
+[![mcp](https://img.shields.io/badge/protocol-MCP-purple.svg)](https://modelcontextprotocol.io/)
+[![tests](https://img.shields.io/badge/tests-380%20passing-brightgreen.svg)](#testing)
+[![security audit](https://img.shields.io/badge/security--audit-Tier%200%2B1%2B2%20%E2%9C%93-success.svg)](./SECURITY.md)
+[![npm audit](https://img.shields.io/badge/npm%20audit-0%20vulnerabilities-brightgreen.svg)](#supply-chain)
 
-A security-hardened Model Context Protocol (MCP) server for **Microsoft Outlook** (Mail + Calendar). Fork of [`@softeria/ms-365-mcp-server`](https://github.com/softeria/ms-365-mcp-server) published by [Ixtria SA](https://ixtria.ch) under Apache-2.0, aimed at Swiss SMEs with nFADP-compatible posture.
+A **security-hardened**, **client-agnostic** Model Context Protocol (MCP) server for **Microsoft Outlook** (Mail + Calendar). Designed for self-hosting by Swiss SMEs (nFADP-compatible posture), independent professionals, and anyone who needs Outlook through MCP **without trusting a third-party SaaS bridge**.
 
-> **Not affiliated with Microsoft or Softeria.** This is an independent security hardening of the upstream project focused on a narrow Outlook-only surface.
+Apache-2.0, no telemetry, no phone-home, OS keychain for tokens, audited egress allowlist. Built on the official [MCP SDK](https://github.com/modelcontextprotocol/typescript-sdk) and `@azure/msal-node`. Fork of [`@softeria/ms-365-mcp-server`](https://github.com/softeria/ms-365-mcp-server) with the surface narrowed and the boundaries instrumented.
+
+> **Not affiliated with Microsoft, Anthropic, or Softeria.** Independent project published by [Ixtria SA](https://ixtria.ch).
 
 ---
 
-## What's different from upstream
+## Why this fork
 
-| | upstream | this fork |
+| | upstream `ms-365-mcp-server` | `@ixtria/outlook-mcp-hardened` |
 |---|---|---|
 | Scope | Mail, Calendar, Files, Excel, Teams, SharePoint, OneNote, Planner, Contacts, To-Do, Directory | **Mail + Calendar only** |
-| Endpoints | 202 | **55** (filtered at build time) |
-| Default policy | write tools registered | **read-only** — writes require explicit opt-in |
-| Egress | trust the network | **hardcoded allowlist** (`login.microsoftonline.com`, `graph.microsoft.com`) |
-| Audit | none | **JSON line per call** on stderr |
-| Prompt injection | mail bodies returned as-is | **`<untrusted_content>` wrapper** with neutralised nested tags |
-| Telemetry | none upstream too | **contractually zero** — CI blocks new deps that phone home |
+| Endpoints | 202 | **58** (filtered at build time, whitelisted in `endpoints.json`) |
+| Default write policy | write tools registered | **read-only by default** — `--enable-send` / `--enable-write` opt-in required |
+| Outbound network | trust the network | **hardcoded allowlist** : `login.microsoftonline.com`, `graph.microsoft.com`. Any other fetch → `EgressViolationError` |
+| Token storage | env var or file | **OS keychain** (`keytar`) when available, file fallback with restricted perms |
+| Audit trail | none | **JSON line on stderr** per Graph call (tool, method, path, scopes, **HMAC-SHA256-hashed account**, status, duration) |
+| Email body returned to LLM | raw | wrapped in `<untrusted_content>` with Unicode-obfuscation strip + tag neutralisation (defense against [Plane-14 steganography attacks](https://en.wikipedia.org/wiki/Tags_(Unicode_block))) |
+| OAuth ingress (HTTP mode) | passthrough | **hardened proxy** : exact-match `redirect_uri`, PKCE S256 mandatory, scope intersection, trust-proxy IP allowlist, [ADR-0003](docs/adr/0003-pivot-niveau-b-oauth-proxy-hardened.md) |
+| Logs PII | raw emails / bodies | **redacted** : emails → `[email:HASH]` (correlatable to audit-log entries), Bearer tokens → `[redacted]`, JWTs → `[JWT redacted]` |
+| Telemetry | none | **contractually zero** — CI blocks new dependencies that phone home |
 | License | MIT | Apache-2.0 (MIT attribution retained) |
 
 ## Quick start
 
+### Stdio (local — Claude Desktop, Claude Code, Continue, Cline, mcp-inspector, custom)
+
 ```bash
 npm install -g @ixtria/outlook-mcp-hardened
 outlook-mcp-hardened --login          # one-time device code flow
-outlook-mcp-hardened                   # starts the MCP server on stdio (read-only)
+outlook-mcp-hardened                   # read-only by default
 ```
 
-Default is **read-only**. To allow writes:
+Then point any MCP-compliant client at the binary via stdio. See [`CLIENT_CONFIG.md`](./CLIENT_CONFIG.md) for examples of generic stdio + HTTP configurations.
+
+### HTTP (remote — behind a reverse proxy)
 
 ```bash
-outlook-mcp-hardened --enable-send     # unlocks send-mail, reply, forward, folders, rules
-outlook-mcp-hardened --enable-write    # unlocks create/update/delete calendar events
+# loopback only — local testing
+outlook-mcp-hardened --http 127.0.0.1:3000
+
+# public deployment — boot guards refuse 0.0.0.0 without TRUSTED_PROXIES + PUBLIC_URL
+OUTLOOK_MCP_TRUSTED_PROXIES=10.0.0.1 \
+OUTLOOK_MCP_PUBLIC_URL=https://outlook-mcp.example.com \
+outlook-mcp-hardened --http 0.0.0.0:3000
+```
+
+See [`docs/MODES.md`](./docs/MODES.md) for the full execution-mode matrix and [`INSTALL.md`](./INSTALL.md) for end-to-end deployment.
+
+### Write opt-in (default is read-only)
+
+```bash
+outlook-mcp-hardened --enable-send     # Mail.Send + Mail.ReadWrite tools
+outlook-mcp-hardened --enable-write    # Calendars.ReadWrite tools
 outlook-mcp-hardened --enable-send --enable-write
 ```
 
-## Threat model
+## Security posture
 
-### What this fork protects against
-
-- **Exfiltration to rogue endpoints** — any outbound fetch to a host outside the allowlist crashes the process at request time. A compromised dependency that tries to phone home cannot reach its C2 without the guard firing.
-- **Prompt injection via email content** — mail bodies, subjects, and attachment filenames are wrapped in `<untrusted_content>` tags with a do-not-follow warning before being handed to the LLM. Nested `<untrusted_content>` or `</untrusted_content>` sequences in the payload are rewritten with a full-width lookalike (`＜`) so the wrapper cannot be escaped.
-- **Silent scope creep** — the token request derives scopes from the filtered `endpoints.json` and the active write policy; `Mail.Send`, `Mail.ReadWrite`, and `Calendars.ReadWrite` are not requested unless `--enable-send` / `--enable-write` was explicitly passed.
-- **Opaque server behaviour** — every Graph call emits a JSON audit line to stderr with tool, method, path, scopes, hashed account, status, and duration.
-- **Token leakage** — tokens are stored in the OS keychain via `keytar` when available, falling back to an encrypted file. They are never logged; error redaction strips `accessToken` fields.
-
-### What this fork does **not** protect against
-
-- **A malicious MCP client** — if the operator runs a compromised agent, that agent can call any registered tool. The fork shrinks the blast radius by defaulting read-only and gating writes behind explicit flags; it does not police the agent itself.
-- **A malicious upstream dependency** — `npm audit` is wired into `npm run verify` and CI, but a novel vulnerability in `@azure/msal-node` or `@modelcontextprotocol/sdk` is still in scope for your own patching workflow.
-- **Multi-tenant isolation** — one running instance serves one operator. Running multiple tenants in the same process is not supported.
-- **Rate limiting** — Microsoft Graph enforces its own throttling. We do not add a local limiter.
-- **Content policy / DLP** — what an operator sends in a reply is between them and their compliance team.
-
-## Prerequisites
-
-- Node.js ≥ 20 LTS
-- A Microsoft Entra (Azure AD) tenant where you can register an application, or ability to use the public default client
-
-## Azure App Registration (one-time, per tenant)
-
-You can run with the built-in public client for quick local testing, but production SME use should register your own application so the consent screen names your organisation rather than the upstream public client.
-
-1. In the Azure portal, go to **Microsoft Entra ID → App registrations → New registration**
-2. **Name**: `outlook-mcp-hardened` (or similar). **Supported account types**: Single tenant is the typical SME choice.
-3. **Redirect URI**: leave empty for device code flow, or add `http://localhost` for browser-based flow.
-4. After creation, note the **Application (client) ID** and **Directory (tenant) ID**.
-5. Under **API permissions → Add a permission → Microsoft Graph → Delegated permissions**, add:
-   - `Mail.Read`
-   - `Calendars.Read`
-   - `User.Read`
-   - `offline_access`
-   - `Mail.Send` and `Mail.ReadWrite` (only if you plan to use `--enable-send`)
-   - `Calendars.ReadWrite` (only if you plan to use `--enable-write`)
-6. Grant admin consent if required by your tenant.
-7. Under **Authentication → Advanced settings**, enable **Allow public client flows** (required for device code flow).
-
-## Configuration
-
-Create a `.env` in your working directory (or export the vars):
-
-```dotenv
-# Required
-MS365_MCP_CLIENT_ID=<your app registration client id>
-MS365_MCP_TENANT_ID=<your directory tenant id>   # use "common" for multi-tenant apps
-
-# Optional (confidential client)
-# MS365_MCP_CLIENT_SECRET=<secret value>
-
-# Optional (China 21Vianet)
-# MS365_MCP_CLOUD_TYPE=china
-```
-
-See `.env.example` for all supported variables.
-
-## MCP client configuration
-
-Claude Desktop (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
-
-```json
-{
-  "mcpServers": {
-    "outlook": {
-      "command": "npx",
-      "args": ["-y", "@ixtria/outlook-mcp-hardened"],
-      "env": {
-        "MS365_MCP_CLIENT_ID": "...",
-        "MS365_MCP_TENANT_ID": "..."
-      }
-    }
-  }
-}
-```
-
-To enable writes, add the appropriate flags in `args`:
-
-```json
-"args": ["-y", "@ixtria/outlook-mcp-hardened", "--enable-write"]
-```
-
-Other MCP clients (Cline, Continue, custom): run `outlook-mcp-hardened` over stdio per the MCP spec.
-
-## CLI reference
-
-| Flag | Purpose |
+| Surface | Defense |
 |---|---|
-| `--login` | Run device code flow, cache the token, exit |
-| `--logout` | Clear the cached token |
-| `--verify-login` | Test the cached token against `me` and exit |
-| `--list-accounts` / `--select-account <id>` / `--remove-account <id>` | Multi-account management |
-| `--enable-send` | Opt in to mail writes (Mail.Send + Mail.ReadWrite) |
-| `--enable-write` | Opt in to calendar writes (Calendars.ReadWrite) |
-| `--read-only` | Legacy alias — read-only is the default; this blocks both opt-ins |
-| `--preset mail` / `--preset calendar` / `--preset all` | Narrow to a single category |
-| `--http [host:port]` | HTTP transport (off by default; defaults to 127.0.0.1:3000) |
-| `--auth-browser` | Use browser-based OAuth instead of device code |
+| Outbound network | Hardcoded host allowlist with synchronous validation BEFORE every `fetch`. `EgressViolationError` crashes the process at boot if a non-Graph dependency tries to reach out. |
+| Account identifiers in logs | HMAC-SHA256 with per-installation salt persisted to `$XDG_STATE_HOME/outlook-mcp/audit-salt` (mode 0600, `O_NOFOLLOW` open). Pseudonymity survives log leak. |
+| Email-borne prompt injection | `<untrusted_content>` wrapper with Unicode-obfuscation strip (U+00AD, U+180E, U+2060-2069, U+FE00-FE0F, U+E0000-U+E007F) + tag-neutralisation with `\p{Default_Ignorable_Code_Point}` tolerance. |
+| OAuth proxy (HTTP mode) | Exact-match `redirect_uri` allowlist (no wildcards). PKCE S256 mandatory. Scope intersection (`requested ∩ registered ∩ KNOWN`). POST `/authorize` → 405 (closes SDK bypass). Discovery issuer fixed at boot, never reflected from `Host`. |
+| Trust proxy / `X-Forwarded-For` | Operator-managed IP allowlist via `OUTLOOK_MCP_TRUSTED_PROXIES`. IPv4 leading-zeros canonicalised. IPv4-mapped IPv6 normalised. Walk XFF right-to-left, stop at first non-trusted hop. |
+| PKCE store (HTTP mode) | Bounded LRU (10k entries) + `setInterval` sweep every 60s + state length cap 256 bytes. Closes the DoS-by-flood vector. |
+| Body parsers | `express.json({ limit: '10kb' })` + `express.urlencoded({ extended: false, parameterLimit: 20 })`. No `qs` nested-key prototype-pollution surface. |
+| Bearer middleware (`/mcp`) | Token validated via `Microsoft Graph /me` round-trip on every request. Forged tokens rejected with `WWW-Authenticate: Bearer error="invalid_token"`. |
+| Express error handler | Global catch-all returns minimal JSON `{error, error_description ≤200 chars}`. No stack traces, no filesystem paths, no Express version leaked. |
+| Token storage | OS keychain via `keytar` (optional dep) with file fallback (mode 0600). MSAL device-code flow by default. |
+| Filesystem | Logs at `$XDG_STATE_HOME/outlook-mcp/logs/` (mode 0700). Salt + cache write with `O_NOFOLLOW | O_EXCL`. |
 
-Environment variable counterparts exist for `READ_ONLY`, `OUTLOOK_MCP_ENABLE_SEND`, `OUTLOOK_MCP_ENABLE_WRITE`, `ENABLED_TOOLS`.
+### Audit history
 
-## Audit trail
+- **Tier 0 — CI/CD automated** : CodeQL, Semgrep (OWASP + JWT + Node + Secrets), OSV-Scanner, Gitleaks, Dependabot, ESLint-plugin-security, license-checker. Weekly cron + per-PR + per-push.
+- **Tier 1 — Multi-school LLM cross-reviews** : 4 rounds (commits b60a690 → 70e8a40). N0 Claude `pr-review-toolkit:code-reviewer`, N3 [`mcp-vault`](https://github.com/Ixtria/mcp-vault) peer review via [`agent-hub`](https://github.com/Ixtria/agent-hub), N4 expert-OAuth-adversarial sub-agent. **8 BLOCKERS + 16 IMPORTANT fixés**, fixes [tracés ligne-à-ligne dans le code](docs/plans/).
+- **Tier 2 — Adversarial active** : property-based testing avec `fast-check` (200 random inputs × 24 propriétés, 0 invariant cassé), OWASP ZAP baseline scan en CI.
+- **Tier 3 — Audit humain expert** : non effectué. Le retour N4 simule au mieux ce niveau mais ne le remplace pas pour un déploiement à des tiers.
 
-Every Graph call emits one JSON line to stderr:
+Full audit trail : [`docs/plans/2026-05-16-security-audit-pre-publication.md`](./docs/plans/2026-05-16-security-audit-pre-publication.md).
 
-```json
-{"ts":"2026-04-14T11:12:13.456Z","tool":"list-mail-messages","method":"GET","path":"/me/messages","scopes":["Mail.Read","User.Read"],"account":"sha256:abc123…","status":200,"duration_ms":142}
-```
+## What this fork does **not** protect against
 
-- **stderr** on purpose — MCP stdio uses stdout for the protocol frame. The audit lines will not corrupt the session.
-- The `account` field is always `sha256:<hex>` (case-folded + trimmed before hashing) or `"none"`. Raw usernames never hit the log.
-- The line does **not** include the request body, the response body, or the bearer token.
+- **A malicious MCP client running locally** — if the agent on the operator's machine is compromised, that agent can invoke any registered tool. The fork shrinks the blast radius via read-only defaults and explicit write opt-ins, but it does not police the agent itself.
+- **Microsoft Graph throttling** — there is no local rate limiter for outbound calls. Graph enforces its own throttling and we surface the error.
+- **Multi-tenant SaaS isolation** — one running instance serves one operator. Concurrent users per instance are not designed for.
+- **Content policy / DLP** — what an operator (or an agent on their behalf) sends in a reply is between them and their compliance team.
+- **A novel vulnerability in `@azure/msal-node`, `@modelcontextprotocol/sdk`, `express`, or `winston`** — `npm audit` is wired into CI but a 0-day in upstream is out of our control.
 
-## Egress allowlist
+For a full STRIDE breakdown : [`docs/threat-model/2026-05-10-oauth-as-threat-model.md`](./docs/threat-model/2026-05-10-oauth-as-threat-model.md).
 
-Hardcoded to:
+## Documentation
 
-- `login.microsoftonline.com` (MSAL token flows)
-- `graph.microsoft.com` (Graph API)
+| Document | Audience |
+|---|---|
+| [`INSTALL.md`](./INSTALL.md) | Operators — full setup, Azure App Registration, env vars, 3 execution modes |
+| [`CLIENT_CONFIG.md`](./CLIENT_CONFIG.md) | Operators — wire any MCP client to this server (stdio or HTTP) |
+| [`USAGE.md`](./USAGE.md) | Operators — common workflows (list mail, send reply, calendar, multi-account) |
+| [`API_REFERENCE.md`](./API_REFERENCE.md) | Operators + integrators — full tool catalog with scopes, params, examples |
+| [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md) | Operators — common errors, diagnostics, fixes |
+| [`docs/MODES.md`](./docs/MODES.md) | Operators + reviewers — execution-mode security matrix (stdio / http-loopback / http-public) |
+| [`SECURITY.md`](./SECURITY.md) | Security researchers — disclosure policy, supported versions, threat model |
+| [`docs/adr/`](./docs/adr/) | Reviewers — architectural decision records |
+| [`CONTRIBUTING.md`](./CONTRIBUTING.md) | Contributors — review workflow, quality gates, commit conventions |
+| [`CHANGELOG.md`](./CHANGELOG.md) | Everyone — release-by-release security + breaking changes |
 
-Any other host — including `graph.microsoft.com.evil.com`, `attacker.graph.microsoft.com`, `http://` on an allowed host, or a non-443 port — raises `EgressViolationError` before the request leaves the process. The guard is installed in `src/index.ts` before any other module loads so there is no window during which outbound fetch is unchecked.
-
-## Development
+## Testing
 
 ```bash
-npm install
-npm run generate          # (re)builds src/generated/client.ts from the filtered endpoints.json
-npm run build             # tsup → dist/
-npm run dev               # watch-mode via tsx
-npm test                  # vitest (138 tests)
-npm run typecheck         # tsc --noEmit — strict, noUncheckedIndexedAccess
-npm run lint
-npm run verify            # generate + lint + typecheck + build + test
+npm test                       # 380 tests across 34 files
+npm run test:coverage          # with v8 coverage report
 ```
 
-See `PLAN.md` for the hardening design and commit-level plan.
+Coverage is enforced ≥ 80% on security-critical modules :
+
+| Module | Lines | Branches |
+|---|---|---|
+| `src/oauth/**` | 100 % | ≥ 92 % |
+| `src/security/**` | ≥ 92 % | ≥ 86 % |
+| `src/lib/trust-proxy.ts` | 100 % | ≥ 94 % |
+| `src/request-context.ts` | 100 % | 100 % |
+
+Property-based tests in [`src/oauth/__tests__/property-based.test.ts`](./src/oauth/__tests__/property-based.test.ts) verify security invariants over 200 random inputs per property (fast-check) :
+
+- `validateRedirectUri` : never accepts URIs containing control chars, non-https schemes, userinfo, or dangerous percent-encoded sequences.
+- `intersectScopes` : output always ⊆ `requested ∩ registered ∩ known`.
+- `resolveClientIp` : an attacker connecting directly (not behind a trusted proxy) never wins XFF spoofing.
+
+## Supply chain
+
+```bash
+npm audit                  # 0 vulnerabilities (verified 2026-06-02)
+```
+
+Direct production dependencies (8) :
+
+- `@azure/msal-node` ^5.2.2 — Microsoft official OAuth/MSAL library
+- `@modelcontextprotocol/sdk` ^1.29.0 — official MCP TypeScript SDK
+- `commander` ^11.1.0, `dotenv` ^17.0.1, `express` ^5.2.1, `open` ^11.0.0, `winston` ^3.17.0, `zod` ^3.24.2
+
+Optional dependencies for enhanced features (auto-detected at runtime) :
+
+- `keytar` ^7.9.0 — OS keychain integration (Linux libsecret, macOS Keychain, Windows Credential Manager)
+- `@azure/identity` ^4.5.0 + `@azure/keyvault-secrets` ^4.9.0 — Azure Key Vault as alternate secret store
+
+License compliance enforced in CI : MIT, Apache-2.0, BSD-2/3-Clause, ISC, CC0-1.0, Unlicense, 0BSD, BlueOak-1.0.0, Python-2.0 only. GPL/AGPL refused.
+
+## Roadmap
+
+### v0.3.x (current cycle)
+
+- ✅ OAuth proxy hardened (ADR-0003)
+- ✅ Multi-school cross-review with 8 BLOCKERS fixed
+- ✅ Property-based + ZAP CI
+- ✅ HMAC+salt audit pseudonymity
+- ⏳ HTTP public deployment kit (`docs/HANDOFF_INFRA.md` + nginx template + systemd unit hardened)
+- ⏳ `/token` endpoint RFC 6749 §5.2 compliance (currently 500 instead of 400 invalid_grant)
+- ⏳ pkceStore graceful shutdown
+
+### v0.4 (planned)
+
+- Architectural refactor : drop `mcpAuthRouter` mount, all OAuth endpoints hand-rolled (eliminates SDK-imported attack surface)
+- HMAC verifier cache (60s TTL) to reduce Graph `/me` round-trips
+- Multi-account isolation per request (currently global state — single-user-only)
+
+### Out of scope
+
+- Other M365 surfaces (Files, Excel, Teams, SharePoint, OneNote) — by design
+- Mode HTTP without reverse proxy in front (TLS termination delegated)
+- Token introspection RFC 7662 (JWT self-contained, no use case)
+
+## Contributing
+
+See [`CONTRIBUTING.md`](./CONTRIBUTING.md). Cross-review obligatoire avant merge sur les surfaces sécurité ; ADRs requises pour les décisions architecturales.
 
 ## Security reports
 
-`SECURITY.md`. Preferred channels: GitHub Private Vulnerability Reporting or `security@ixtria.ch`.
+Voir [`SECURITY.md`](./SECURITY.md). Channels :
+
+- GitHub Private Vulnerability Reporting (preferred)
+- `security@ixtria.ch`
+
+Reproduction-runtime preferred (V3 anti-hallucination schema documented in [`docs/adr/0001-cross-llm-review-grid.md`](./docs/adr/0001-cross-llm-review-grid.md)). Coordinated disclosure within 48h acknowledgement, 10 business days remediation timeline.
 
 ## License
 
-Apache-2.0. Derivative of [`ms-365-mcp-server`](https://github.com/softeria/ms-365-mcp-server) (MIT, © 2025 Softeria). See `LICENSE` for the full attribution.
+[Apache-2.0](./LICENSE). Derivative of [`ms-365-mcp-server`](https://github.com/softeria/ms-365-mcp-server) (MIT, © 2025 Softeria) — see `LICENSE` for full attribution.
+
+---
+
+*Built and audited by [Ixtria SA](https://ixtria.ch), Switzerland 🇨🇭*
