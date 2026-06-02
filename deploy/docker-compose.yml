@@ -1,0 +1,80 @@
+# docker-compose template for outlook-mcp-hardened HTTP-public deployment
+# with Caddy reverse proxy. Run from the repo root :
+#
+#   cp deploy/outlook-mcp.env.example .env       # fill in values first
+#   docker compose -f deploy/docker-compose.yml up -d
+#
+# First-time auth (interactive) :
+#   docker compose -f deploy/docker-compose.yml run --rm outlook-mcp \
+#     outlook-mcp-hardened --login
+#
+# This template uses Caddy because it handles TLS automatically. For nginx,
+# swap the `caddy` service for an nginx image and mount nginx-outlook-mcp.conf.
+
+services:
+
+  outlook-mcp:
+    image: outlook-mcp-hardened:0.3.0
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    env_file: ../.env
+    environment:
+      OUTLOOK_MCP_TRUSTED_PROXIES: 172.20.0.2  # caddy's IP in the network below
+      OUTLOOK_MCP_PUBLIC_URL: ${OUTLOOK_MCP_PUBLIC_URL:?Set OUTLOOK_MCP_PUBLIC_URL in .env}
+    expose:
+      - "3000"
+    volumes:
+      - outlook-mcp-state:/var/lib/outlook-mcp
+      - outlook-mcp-logs:/var/log/outlook-mcp
+    networks:
+      outlook-mcp-net:
+        ipv4_address: 172.20.0.3
+    # Container-level hardening (complements the systemd hardening directives
+    # in deploy/outlook-mcp.service — they are orthogonal layers).
+    read_only: true
+    tmpfs:
+      - /tmp:size=64M,mode=0700
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '2.0'
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3 (optional)
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      outlook-mcp-net:
+        ipv4_address: 172.20.0.2
+    depends_on:
+      - outlook-mcp
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  outlook-mcp-net:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.20.0.0/24
+
+volumes:
+  outlook-mcp-state:
+  outlook-mcp-logs:
+  caddy-data:
+  caddy-config:

@@ -204,7 +204,13 @@ The reverse proxy (nginx, Caddy, etc.) MUST :
 - Inject `X-Forwarded-For` correctly (append the client IP, do not blindly trust the client's value)
 - List its own outbound IP in `OUTLOOK_MCP_TRUSTED_PROXIES`
 
-For nginx + Caddy templates and systemd unit, see `docs/HANDOFF_INFRA.md` (TODO v0.3.x — work in progress).
+For nginx + Caddy templates, hardened systemd unit, monitoring, and rollback procedures, see [`docs/HANDOFF_INFRA.md`](./docs/HANDOFF_INFRA.md). Ready-to-deploy templates in [`deploy/`](./deploy/) :
+
+- [`deploy/outlook-mcp.service`](./deploy/outlook-mcp.service) — hardened systemd unit
+- [`deploy/outlook-mcp.env.example`](./deploy/outlook-mcp.env.example) — env file template
+- [`deploy/nginx-outlook-mcp.conf`](./deploy/nginx-outlook-mcp.conf) — nginx reverse proxy
+- [`deploy/Caddyfile`](./deploy/Caddyfile) — Caddy alternative (TLS automatic)
+- [`deploy/Dockerfile`](./deploy/Dockerfile) + [`deploy/docker-compose.yml`](./deploy/docker-compose.yml) — container deployment
 
 #### Boot guards
 

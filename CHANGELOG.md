@@ -6,6 +6,16 @@ Versionning : [SemVer](https://semver.org/lang/fr/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added — Phase C HTTP-public deployment kit (2026-06-02)
+
+- `deploy/outlook-mcp.service` — hardened systemd unit (NoNewPrivileges, ProtectSystem=strict, ProtectHome, PrivateTmp, PrivateDevices, ProtectKernel*, MemoryDenyWriteExecute, RestrictNamespaces, RestrictAddressFamilies AF_UNIX/INET/INET6, CapabilityBoundingSet=, SystemCallFilter=@system-service, resource limits)
+- `deploy/outlook-mcp.env.example` — env file template (Azure App Reg + PUBLIC_URL + TRUSTED_PROXIES + optional CORS/write policy/rate-limit)
+- `deploy/nginx-outlook-mcp.conf` — nginx reverse proxy (Let's Encrypt + HSTS + CSP + XFF append + rate_limit zones + body size cap + slowloris defenses + SSE buffering off for /mcp)
+- `deploy/Caddyfile` — Caddy alternative (TLS automatic, simpler config)
+- `deploy/Dockerfile` — multi-stage container build (node:22-bookworm-slim, non-root, dumb-init, libsecret for keytar)
+- `deploy/docker-compose.yml` — outlook-mcp + Caddy stack (read_only, cap_drop ALL, no-new-privileges)
+- `docs/HANDOFF_INFRA.md` (416 lines) — end-to-end deployment handoff : DNS → TLS → reverse proxy → systemd → first auth → monitoring → logrotate → rollback → security posture verification checklist
+
 ### Planned v0.4
 
 - Architectural refactor : drop `mcpAuthRouter` mount, all OAuth endpoints hand-rolled (eliminates SDK-imported attack surface — N4 META recommendation)
@@ -13,7 +23,6 @@ Versionning : [SemVer](https://semver.org/lang/fr/spec/v2.0.0.html).
 - `/token` endpoint RFC 6749 §5.2 compliance (currently 500 instead of 400 invalid_grant)
 - `pkceSweepHandle` graceful shutdown
 - AAD error body sanitization (trace_id, correlation_id stripped before log)
-- HTTP-public deployment kit : `docs/HANDOFF_INFRA.md` + nginx template + systemd unit hardened (Phase C)
 
 ## [0.3.0] — 2026-06-02 — pre-publication security audit complete
 

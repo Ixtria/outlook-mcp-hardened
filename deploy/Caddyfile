@@ -1,0 +1,94 @@
+# Caddy reverse-proxy template for outlook-mcp-hardened.
+#
+# Simpler alternative to nginx. Caddy handles TLS automatically via
+# Let's Encrypt — no certbot setup needed.
+#
+# Install :
+#   sudo cp Caddyfile /etc/caddy/Caddyfile         # or include in existing
+#   sudo systemctl reload caddy
+#
+# Make sure DNS A/AAAA record for outlook-mcp.example.com points to this host.
+
+# ─────────────────────────────────────────────────────────────────────────
+# Global rate limit (caddy-rate-limit module — may need installation)
+# ─────────────────────────────────────────────────────────────────────────
+# If you don't have the rate-limit plugin, you can drop the rate_limit
+# directives below — the app has its own pkceStore + per-IP middleware.
+
+{
+    # Comment out if no rate-limit plugin
+    # order rate_limit before reverse_proxy
+}
+
+# ─────────────────────────────────────────────────────────────────────────
+# Site
+# ─────────────────────────────────────────────────────────────────────────
+
+outlook-mcp.example.com {
+
+    # TLS automatic (Let's Encrypt). Caddy renews on its own.
+    tls youremail@example.com
+
+    # ─── Security headers ───────────────────────────────────────────────
+    header {
+        Strict-Transport-Security  "max-age=31536000; includeSubDomains"
+        Content-Security-Policy    "default-src 'none'; frame-ancestors 'none'"
+        X-Content-Type-Options     "nosniff"
+        X-Frame-Options            "DENY"
+        Referrer-Policy            "no-referrer"
+        Permissions-Policy         "interest-cohort=()"
+        Cross-Origin-Opener-Policy "same-origin"
+        # Hide Caddy version
+        -Server
+    }
+
+    # ─── Request size limits ────────────────────────────────────────────
+    request_body {
+        max_size 32KB
+    }
+
+    # ─── MCP Streamable HTTP endpoint ───────────────────────────────────
+    @mcp path /mcp
+    reverse_proxy @mcp 127.0.0.1:3000 {
+        # Trust this proxy : APPEND the real client IP (the outlook-mcp
+        # app reads XFF rightmost-but-skipping-trusted).
+        header_up X-Real-IP         {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+        header_up X-Forwarded-Host  {host}
+        # X-Forwarded-For is auto-appended by Caddy
+
+        # Streaming support
+        flush_interval -1
+
+        transport http {
+            response_header_timeout 300s
+        }
+    }
+
+    # ─── OAuth endpoints ────────────────────────────────────────────────
+    @oauth {
+        path /authorize /token /register
+        path_regexp /.well-known/oauth-.*
+    }
+    reverse_proxy @oauth 127.0.0.1:3000 {
+        header_up X-Real-IP         {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+        header_up X-Forwarded-Host  {host}
+    }
+
+    # ─── Health check ───────────────────────────────────────────────────
+    handle_path / {
+        reverse_proxy 127.0.0.1:3000
+    }
+
+    # ─── Block everything else ──────────────────────────────────────────
+    handle {
+        respond "Not Found" 404
+    }
+
+    # ─── Logging ────────────────────────────────────────────────────────
+    log {
+        output file /var/log/caddy/outlook-mcp.access.log
+        format json
+    }
+}

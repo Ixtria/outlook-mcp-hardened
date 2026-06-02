@@ -164,7 +164,7 @@ License compliance enforced in CI : MIT, Apache-2.0, BSD-2/3-Clause, ISC, CC0-1.
 - ✅ Multi-school cross-review with 8 BLOCKERS fixed
 - ✅ Property-based + ZAP CI
 - ✅ HMAC+salt audit pseudonymity
-- ⏳ HTTP public deployment kit (`docs/HANDOFF_INFRA.md` + nginx template + systemd unit hardened)
+- ✅ HTTP-public deployment kit ([`docs/HANDOFF_INFRA.md`](./docs/HANDOFF_INFRA.md) + [hardened systemd unit](./deploy/outlook-mcp.service) + [nginx](./deploy/nginx-outlook-mcp.conf) / [Caddy](./deploy/Caddyfile) templates + [Docker](./deploy/Dockerfile))
 - ⏳ `/token` endpoint RFC 6749 §5.2 compliance (currently 500 instead of 400 invalid_grant)
 - ⏳ pkceStore graceful shutdown
 

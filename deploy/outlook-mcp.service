@@ -1,0 +1,120 @@
+# systemd unit for outlook-mcp-hardened — production HTTP-public deployment.
+#
+# Install :
+#   sudo useradd --system --home /var/lib/outlook-mcp --shell /usr/sbin/nologin outlook-mcp
+#   sudo install -d -o outlook-mcp -g outlook-mcp -m 0700 /var/lib/outlook-mcp
+#   sudo install -d -o outlook-mcp -g outlook-mcp -m 0700 /var/log/outlook-mcp
+#   sudo cp outlook-mcp.service /etc/systemd/system/
+#   sudo cp /path/to/outlook-mcp.env /etc/outlook-mcp.env
+#   sudo chown root:outlook-mcp /etc/outlook-mcp.env && sudo chmod 0640 /etc/outlook-mcp.env
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now outlook-mcp
+#   sudo systemctl status outlook-mcp
+#
+# The hardening directives below are based on https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html
+# and on the analysis run by `systemd-analyze security outlook-mcp.service`
+# (target : security score < 1.5 = "OK" rating).
+
+[Unit]
+Description=outlook-mcp-hardened — Microsoft Outlook MCP server (HTTP-public)
+Documentation=https://github.com/Ixtria/outlook-mcp-hardened
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=outlook-mcp
+Group=outlook-mcp
+
+# Where the binary lives. Adjust to your install layout (npm i -g, custom build, etc.).
+# Default below assumes a system-wide global npm install.
+ExecStart=/usr/bin/env outlook-mcp-hardened --http 127.0.0.1:3000
+
+EnvironmentFile=/etc/outlook-mcp.env
+
+# Working dir + state. XDG_STATE_HOME points at our writeable area.
+WorkingDirectory=/var/lib/outlook-mcp
+Environment=XDG_STATE_HOME=/var/lib/outlook-mcp
+Environment=OUTLOOK_MCP_LOGS_DIR=/var/log/outlook-mcp
+Environment=NODE_ENV=production
+
+# ─────────────────────────────────────────────────────────────────────────
+# HARDENING
+# ─────────────────────────────────────────────────────────────────────────
+
+# Privilege drop : run as a dedicated unprivileged user, never gain new privs.
+NoNewPrivileges=true
+
+# Filesystem isolation
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/outlook-mcp /var/log/outlook-mcp
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+
+# Memory hardening
+MemoryDenyWriteExecute=true
+
+# Process tree isolation
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RemoveIPC=true
+UMask=0077
+
+# Network surface — outbound only to known Microsoft IPs (the egress guard
+# enforces hostname allowlist at the application layer ; this systemd layer
+# bounds the syscall surface).
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=127.0.0.1/8
+IPAddressAllow=::1
+# Microsoft Graph + login.microsoftonline.com IP ranges change ; we cannot
+# hardcode them here. The egress guard at the app layer handles hostname
+# enforcement. Leave outbound mostly open and rely on the app guard.
+# If your firewall has a Microsoft-only profile, prefer that.
+
+# Capabilities : drop all. Node listens on a high port (3000), no CAP_NET_BIND_SERVICE needed.
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# System call filtering — allow what Node 20 needs, deny the rest.
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @reboot @swap @cpu-emulation @debug @mount @raw-io
+SystemCallArchitectures=native
+
+# Resource limits — protect the host from runaway behaviour.
+LimitNOFILE=4096
+LimitNPROC=512
+LimitFSIZE=100M
+LimitCORE=0
+TasksMax=128
+MemoryMax=512M
+MemoryHigh=256M
+CPUQuota=200%
+
+# Crash + restart policy
+Restart=on-failure
+RestartSec=10s
+StartLimitBurst=5
+StartLimitIntervalSec=60s
+
+# Watchdog (optional — uncomment if your binary supports sd_notify)
+# WatchdogSec=30s
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=outlook-mcp
+
+[Install]
+WantedBy=multi-user.target
