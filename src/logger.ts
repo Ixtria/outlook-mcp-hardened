@@ -30,7 +30,9 @@ function resolveLogsDir(): string {
 
 const logsDir = resolveLogsDir();
 
+// eslint-disable-next-line security/detect-non-literal-fs-filename -- justif: logsDir via resolveLogsDir() → OUTLOOK_MCP_LOGS_DIR env / XDG_STATE_HOME (opérateur-controlled). MCP tourne en stdio local, aucun canal réseau n'atteint ces variables. Voir threat model: docs/security/threat-model.md §fs-paths.
 if (!fs.existsSync(logsDir)) {
+  // eslint-disable-next-line security/detect-non-literal-fs-filename -- justif: logsDir via resolveLogsDir() → OUTLOOK_MCP_LOGS_DIR env / XDG_STATE_HOME (opérateur-controlled). Même justif que existsSync ligne au-dessus.
   fs.mkdirSync(logsDir, { recursive: true, mode: 0o700 });
 }
 
@@ -70,6 +72,7 @@ const piiRedactFormat = winston.format((info) => {
   // `logger.error('label', err)` case (where message='label' and err lives
   // in splat) slips past it.
   const record = info as unknown as Record<string | symbol, unknown>;
+  // eslint-disable-next-line security/detect-object-injection -- justif: SPLAT = Symbol.for('splat'), pas une string — impossible d'atteindre depuis un input JSON/attaquant.
   const splat = record[SPLAT];
   if (Array.isArray(splat)) {
     for (const item of splat) {
@@ -84,6 +87,7 @@ const piiRedactFormat = winston.format((info) => {
     }
     // Deep-redact the splat contents anyway. Even though the json transport
     // doesn't emit splat, a future transport (or a debug print) might.
+    // eslint-disable-next-line security/detect-object-injection -- justif: SPLAT = Symbol.for('splat'), pas une string — impossible d'atteindre depuis un input JSON/attaquant.
     record[SPLAT] = splat.map((v) => redactSensitiveDeep(v));
   }
 
@@ -91,6 +95,7 @@ const piiRedactFormat = winston.format((info) => {
   // untouched ; only string values (and strings found inside nested
   // objects / arrays / Error instances) are rewritten.
   for (const key of Object.keys(info)) {
+    // eslint-disable-next-line security/detect-object-injection -- justif: key vient de Object.keys(info) — appartient garanti au record. Pattern deep-redact append-only sur enum. props.
     record[key] = redactSensitiveDeep(record[key]);
   }
   return info;

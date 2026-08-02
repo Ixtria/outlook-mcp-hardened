@@ -87,7 +87,9 @@ class GraphClient {
       }
 
       const text = await response.text();
-      let result: any;
+      // HARDENED: was `any` (upstream). Downstream serializeData(...) accepts
+      // `unknown`; the object-narrowing branch below re-checks type at runtime.
+      let result: unknown;
 
       if (text === '') {
         result = { message: 'OK!' };
@@ -267,8 +269,11 @@ class GraphClient {
         if (typeof obj === 'object' && obj !== null) {
           Object.keys(obj).forEach((key) => {
             if (key.startsWith('@odata.') && key !== '@odata.nextLink') {
+              // eslint-disable-next-line security/detect-object-injection -- justif: key vient de Object.keys(obj), donc appartient garanti à obj. Pattern de suppression de champs @odata.* — pas d'injection possible.
               delete obj[key];
+              // eslint-disable-next-line security/detect-object-injection -- justif: key vient de Object.keys(obj), donc appartient garanti à obj. Pattern de suppression de champs @odata.* — pas d'injection possible.
             } else if (typeof obj[key] === 'object') {
+              // eslint-disable-next-line security/detect-object-injection -- justif: key vient de Object.keys(obj), donc appartient garanti à obj. Pattern de suppression de champs @odata.* — pas d'injection possible.
               removeODataProps(obj[key] as Record<string, unknown>);
             }
           });
@@ -303,8 +308,11 @@ class GraphClient {
       if (typeof obj === 'object' && obj !== null) {
         Object.keys(obj).forEach((key) => {
           if (key.startsWith('@odata.') && key !== '@odata.nextLink') {
+            // eslint-disable-next-line security/detect-object-injection -- justif: key vient de Object.keys(obj), donc appartient garanti à obj. Pattern de suppression de champs @odata.* — pas d'injection possible.
             delete obj[key];
+            // eslint-disable-next-line security/detect-object-injection -- justif: key vient de Object.keys(obj), donc appartient garanti à obj. Pattern de suppression de champs @odata.* — pas d'injection possible.
           } else if (typeof obj[key] === 'object') {
+            // eslint-disable-next-line security/detect-object-injection -- justif: key vient de Object.keys(obj), donc appartient garanti à obj. Pattern de suppression de champs @odata.* — pas d'injection possible.
             removeODataProps(obj[key] as Record<string, unknown>);
           }
         });

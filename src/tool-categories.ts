@@ -28,7 +28,13 @@ export const TOOL_CATEGORIES: Record<string, ToolCategory> = {
 
 export function getCombinedPresetPattern(presets: string[]): string {
   const patterns = presets.map((preset) => {
-    const category = TOOL_CATEGORIES[preset];
+    // HARDENED: `preset` is user-supplied (CLI/env). Guard with hasOwnProperty
+    // to block prototype-chain keys (__proto__, constructor…) even though
+    // TOOL_CATEGORIES is a small closed record.
+    const category = Object.prototype.hasOwnProperty.call(TOOL_CATEGORIES, preset)
+      ? // eslint-disable-next-line security/detect-object-injection -- justif: accès gardé par Object.prototype.hasOwnProperty.call ci-dessus — le ternaire court-circuite sur undefined pour toute clé non-own (bloque __proto__/constructor). eslint ne voit pas la garde statiquement.
+        TOOL_CATEGORIES[preset]
+      : undefined;
     if (!category) {
       throw new Error(
         `Unknown preset: ${preset}. Available presets: ${Object.keys(TOOL_CATEGORIES).join(', ')}`
@@ -52,6 +58,12 @@ export function listPresets(): Array<{
 }
 
 export function presetRequiresOrgMode(preset: string): boolean {
-  const category = TOOL_CATEGORIES[preset];
+  // HARDENED: `preset` is user-supplied. Guard with hasOwnProperty to block
+  // prototype-chain keys (__proto__, constructor…). Same rationale as
+  // getCombinedPresetPattern above.
+  const category = Object.prototype.hasOwnProperty.call(TOOL_CATEGORIES, preset)
+    ? // eslint-disable-next-line security/detect-object-injection -- justif: accès gardé par Object.prototype.hasOwnProperty.call ci-dessus — le ternaire court-circuite sur undefined pour toute clé non-own (bloque __proto__/constructor). eslint ne voit pas la garde statiquement.
+      TOOL_CATEGORIES[preset]
+    : undefined;
   return category?.requiresOrgMode || false;
 }

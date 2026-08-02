@@ -173,6 +173,7 @@ export function redactSensitiveDeep(value: unknown, seen?: WeakSet<object>): unk
     }
     for (const key of Object.keys(err)) {
       if (key === 'name' || key === 'message' || key === 'stack') continue;
+      // eslint-disable-next-line security/detect-object-injection -- justif: key vient de Object.keys(err) sur une instance Error. Pattern serialize-Error-props-safely.
       redacted[key] = redactSensitiveDeep((err as unknown as Record<string, unknown>)[key], tracker);
     }
     return redacted;
@@ -185,6 +186,7 @@ export function redactSensitiveDeep(value: unknown, seen?: WeakSet<object>): unk
   const source = value as Record<string, unknown>;
   const out: Record<string, unknown> = {};
   for (const key of Object.keys(source)) {
+    // eslint-disable-next-line security/detect-object-injection -- justif: key vient de Object.keys(source) sur l'objet en cours de deep-redact. Iteration append-only.
     out[key] = redactSensitiveDeep(source[key], tracker);
   }
   return out;

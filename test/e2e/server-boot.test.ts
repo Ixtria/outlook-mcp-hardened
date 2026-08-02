@@ -39,7 +39,7 @@ type EnvKey = (typeof ENV_KEYS)[number];
 function snapshotEnv(): Map<EnvKey, string | undefined> {
   const snap = new Map<EnvKey, string | undefined>();
   for (const key of ENV_KEYS) {
-    // eslint-disable-next-line security/detect-object-injection -- justif: key is typed EnvKey (compile-time closed union), not user input.
+     
     snap.set(key, process.env[key]);
   }
   return snap;
@@ -49,10 +49,10 @@ function restoreEnv(snap: Map<EnvKey, string | undefined>): void {
   for (const key of ENV_KEYS) {
     const v = snap.get(key);
     if (v === undefined) {
-      // eslint-disable-next-line security/detect-object-injection -- justif: key is typed EnvKey (compile-time closed union), not user input.
+       
       delete process.env[key];
     } else {
-      // eslint-disable-next-line security/detect-object-injection -- justif: key is typed EnvKey (compile-time closed union), not user input.
+       
       process.env[key] = v;
     }
   }
@@ -96,7 +96,7 @@ describe('server.ts — boot-time behavior', () => {
     envSnap = snapshotEnv();
     // Baseline : clear all HTTP-mode env vars so each test opts in.
     for (const key of ENV_KEYS) {
-      // eslint-disable-next-line security/detect-object-injection -- justif: key is typed EnvKey (compile-time closed union), not user input.
+       
       delete process.env[key];
     }
     // getSecrets() reads process.env — stub it to avoid depending on the
@@ -129,7 +129,7 @@ describe('server.ts — boot-time behavior', () => {
       // Replace the internal stdio-server connect so we don't actually
       // hook stdin/stdout in a test process. We can spy on the McpServer
       // instance the class built in initialize().
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- justif: reaching into a private field is the whole point of the test.
+       
       const mcpServer = (server as any).server as { connect: (t: unknown) => Promise<void> };
       const spy = vi.spyOn(mcpServer, 'connect').mockResolvedValue();
 
@@ -203,7 +203,7 @@ describe('server.ts — boot-time behavior', () => {
         // Best-effort shutdown : the class does not expose a `stop()`. We
         // reach into Express to close the underlying server so subsequent
         // tests can reserve fresh ports without leaking sockets.
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- justif: private-server shutdown for test hygiene.
+         
         const anyServer = server as any;
         // Node's http.Server list is not exposed by Express directly, so we
         // fall back on process open handles cleanup at afterAll.

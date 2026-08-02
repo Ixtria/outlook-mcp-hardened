@@ -31,7 +31,6 @@ import {
   mkdirSync,
   openSync,
   readSync,
-  statSync,
   writeSync,
   chmodSync,
 } from 'node:fs';
@@ -83,11 +82,13 @@ export function getAuditSalt(): Buffer {
   }
 
   const saltPath = getSaltPath();
+  // eslint-disable-next-line security/detect-non-literal-fs-filename -- justif: saltPath via getSaltPath() → XDG_STATE_HOME (opérateur-controlled). MCP tourne en stdio local, aucun canal réseau n'atteint ces variables. Voir threat model: docs/security/threat-model.md §fs-paths.
   if (existsSync(saltPath)) {
     // O_NOFOLLOW : if saltPath is a symlink, openSync throws ELOOP. This
     // blocks a pre-planted-symlink attacker from redirecting our reads.
     let fd: number;
     try {
+      // eslint-disable-next-line security/detect-non-literal-fs-filename -- justif: saltPath via XDG_STATE_HOME (opérateur-controlled). Défense en profondeur contre symlink-attack via O_NOFOLLOW (fix N0-I2 2026-06-02).
       fd = openSync(saltPath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
     } catch (err) {
       // eslint-disable-next-line no-undef -- NodeJS namespace is a TypeScript-only ambient type, not a runtime global
@@ -115,6 +116,7 @@ export function getAuditSalt(): Buffer {
       const mode = stat.mode & 0o777;
       if (mode !== 0o600) {
         try {
+          // eslint-disable-next-line security/detect-non-literal-fs-filename -- justif: saltPath via XDG_STATE_HOME (opérateur-controlled). Hardening post-read : re-narrow perms à 0600 si widening externe.
           chmodSync(saltPath, 0o600);
         } catch {
           // Best-effort hardening; not fatal.
@@ -131,7 +133,9 @@ export function getAuditSalt(): Buffer {
   // fails if any file exists at the path — defense against TOCTOU between
   // the existsSync check above and this open call).
   const salt = randomBytes(SALT_BYTES);
+  // eslint-disable-next-line security/detect-non-literal-fs-filename -- justif: dirname(saltPath) via XDG_STATE_HOME (opérateur-controlled). Création répertoire parent pour première persistance du salt.
   mkdirSync(dirname(saltPath), { recursive: true, mode: 0o700 });
+  // eslint-disable-next-line security/detect-non-literal-fs-filename -- justif: saltPath via XDG_STATE_HOME (opérateur-controlled). Défense en profondeur contre symlink-attack via O_NOFOLLOW (fix N0-I2 2026-06-02). Création atomique via O_EXCL (protection TOCTOU vs. existsSync check ligne 86).
   const fd = openSync(
     saltPath,
     fsConstants.O_WRONLY |

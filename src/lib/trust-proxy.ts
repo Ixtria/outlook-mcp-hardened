@@ -108,6 +108,7 @@ export function resolveClientIp(
   if (hops.length === 0) return peer;
 
   for (let i = hops.length - 1; i >= 0; i--) {
+    // eslint-disable-next-line security/detect-object-injection -- justif: i est un index numérique dans une boucle for bornée par hops.length. Pas d'accès à propriété nommée exploitable.
     const hop = hops[i];
     if (hop !== undefined && !trustedProxies.has(hop)) return hop;
   }

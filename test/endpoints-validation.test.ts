@@ -5,7 +5,7 @@ import path from 'path';
 
 // Node 18 lacks the File global that the generated Zod schemas reference.
 // Must be set before the dynamic import below.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 if (!globalThis.File) (globalThis as any).File = Blob;
 
 const { api } = await import('../src/generated/client.js');

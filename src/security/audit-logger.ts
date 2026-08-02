@@ -123,6 +123,7 @@ export function validateAuditSaltFile(): void {
   const saltPath = getSaltPath();
   let stat: ReturnType<typeof lstatSync>;
   try {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- justif: saltPath via getSaltPath() → XDG_STATE_HOME (opérateur-controlled). MCP tourne en stdio local, aucun canal réseau n'atteint ces variables. Voir threat model: docs/security/threat-model.md §fs-paths.
     stat = lstatSync(saltPath);
   } catch (err) {
     // eslint-disable-next-line no-undef -- justif: NodeJS.ErrnoException is a TS ambient type, not a runtime global

@@ -66,7 +66,7 @@ function captureAudits(): {
   const rawLines: string[] = [];
   const spy = vi
     .spyOn(process.stderr, 'write')
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- justif: process.stderr.write accepts many overloads; the mock only needs the truthy return.
+     
     .mockImplementation(((chunk: any): boolean => {
       const line = typeof chunk === 'string' ? chunk : String(chunk);
       rawLines.push(line);
@@ -81,7 +81,7 @@ function captureAudits(): {
         }
       }
       return true;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- justif: same as above; matches the spied signature loosely.
+       
     }) as any);
 
   return {
@@ -458,7 +458,7 @@ describe('OBS-02 — OAuth audit events', () => {
             ok: true,
             status: 200,
             json: async () => ({ userPrincipalName: 'alice@example.com' }),
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- justif: stubbed Response shape, only `ok`/`status`/`json` are consumed by the SUT.
+             
           }) as any
       );
 
@@ -495,7 +495,7 @@ describe('OBS-02 — OAuth audit events', () => {
             ok: false,
             status: 401,
             json: async () => ({}),
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- justif: same shape rationale.
+             
           }) as any
       );
 

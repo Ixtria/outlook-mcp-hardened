@@ -15,7 +15,10 @@ import {
 
 // Ok so this is a hack to lazily import keytar only when needed
 // since --http mode may not need it at all, and keytar can be a pain to install (looking at you alpine)
-let keytar: typeof import('keytar') | null = null;
+// HARDENED: widen the type union to include `undefined` so we no longer need
+// `as any` when marking the module load as permanently failed. The three-state
+// invariant (null=untried, module=loaded, undefined=load-failed) is preserved.
+let keytar: typeof import('keytar') | null | undefined = null;
 async function getKeytar() {
   if (keytar === undefined) {
     return null;
@@ -24,9 +27,9 @@ async function getKeytar() {
     try {
       keytar = await import('keytar');
       return keytar;
-    } catch (error) {
+    } catch {
       logger.info('keytar not available, using file-based credential storage');
-      keytar = undefined as any;
+      keytar = undefined;
       return null;
     }
   }
@@ -82,6 +85,7 @@ function getSelectedAccountPath(): string {
  */
 function ensureParentDir(filePath: string): void {
   const dir = path.dirname(filePath);
+  // eslint-disable-next-line security/detect-non-literal-fs-filename -- justif: filePath dérivé de getTokenCachePath() / getSelectedAccountPath() → XDG_STATE_HOME + MS365_MCP_TOKEN_CACHE_PATH / MS365_MCP_SELECTED_ACCOUNT_PATH env (opérateur-controlled). MCP tourne en stdio local, aucun canal réseau n'atteint ces variables. Voir threat model: docs/security/threat-model.md §fs-paths.
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
 }
 
@@ -161,9 +165,15 @@ function buildScopesFromEndpoints(
       // eslint-disable-next-line security/detect-non-literal-regexp
       enabledToolsRegex = new RegExp(enabledToolsPattern, 'i');
       logger.info(`Building scopes with tool filter pattern: ${enabledToolsPattern}`);
-    } catch (error) {
+    } catch (_error) {
+      // HARDENED: preserve invalid-regex diagnostic at debug level (behaviour
+      // stays "fall back to unfiltered scopes"). Renamed to `_error` per the
+      // argsIgnorePattern convention in eslint.config.js.
       logger.error(
         `Invalid tool filter regex pattern: ${enabledToolsPattern}. Building scopes without filter.`
+      );
+      logger.debug(
+        `enabled-tools regex compile failed — swallowing, using unfiltered scopes: ${(_error as Error).message}`
       );
     }
   }
@@ -274,7 +284,9 @@ class AuthManager {
 
       let fileRaw: string | undefined;
       const cachePath = getTokenCachePath();
+      // eslint-disable-next-line security/detect-non-literal-fs-filename -- justif: cachePath via getTokenCachePath() → MS365_MCP_TOKEN_CACHE_PATH env / XDG_STATE_HOME (opérateur-controlled). MCP tourne en stdio local, aucun canal réseau n'atteint cette variable. Voir threat model: docs/security/threat-model.md §fs-paths.
       if (existsSync(cachePath)) {
+        // eslint-disable-next-line security/detect-non-literal-fs-filename -- justif: cachePath via MS365_MCP_TOKEN_CACHE_PATH env / XDG_STATE_HOME (opérateur-controlled), même origine que existsSync ligne au-dessus.
         fileRaw = readFileSync(cachePath, 'utf8');
       }
 
@@ -306,7 +318,9 @@ class AuthManager {
 
       let fileRaw: string | undefined;
       const accountPath = getSelectedAccountPath();
+      // eslint-disable-next-line security/detect-non-literal-fs-filename -- justif: accountPath via getSelectedAccountPath() → MS365_MCP_SELECTED_ACCOUNT_PATH env / XDG_STATE_HOME (opérateur-controlled). MCP tourne en stdio local, aucun canal réseau n'atteint cette variable. Voir threat model: docs/security/threat-model.md §fs-paths.
       if (existsSync(accountPath)) {
+        // eslint-disable-next-line security/detect-non-literal-fs-filename -- justif: accountPath via MS365_MCP_SELECTED_ACCOUNT_PATH env / XDG_STATE_HOME (opérateur-controlled), même origine que existsSync ligne au-dessus.
         fileRaw = readFileSync(accountPath, 'utf8');
       }
 
@@ -339,6 +353,7 @@ class AuthManager {
         } else {
           const cachePath = getTokenCachePath();
           ensureParentDir(cachePath);
+          // eslint-disable-next-line security/detect-non-literal-fs-filename -- justif: cachePath via getTokenCachePath() → MS365_MCP_TOKEN_CACHE_PATH env / XDG_STATE_HOME (opérateur-controlled). MCP tourne en stdio local, aucun canal réseau n'atteint cette variable. Voir threat model: docs/security/threat-model.md §fs-paths.
           fs.writeFileSync(cachePath, stamped, { mode: 0o600 });
         }
       } catch (keytarError) {
@@ -348,6 +363,7 @@ class AuthManager {
 
         const cachePath = getTokenCachePath();
         ensureParentDir(cachePath);
+        // eslint-disable-next-line security/detect-non-literal-fs-filename -- justif: cachePath via getTokenCachePath() → MS365_MCP_TOKEN_CACHE_PATH env / XDG_STATE_HOME (opérateur-controlled). Fallback file-storage après keytar failure.
         fs.writeFileSync(cachePath, stamped, { mode: 0o600 });
       }
     } catch (error) {
@@ -366,6 +382,7 @@ class AuthManager {
         } else {
           const accountPath = getSelectedAccountPath();
           ensureParentDir(accountPath);
+          // eslint-disable-next-line security/detect-non-literal-fs-filename -- justif: accountPath via getSelectedAccountPath() → MS365_MCP_SELECTED_ACCOUNT_PATH env / XDG_STATE_HOME (opérateur-controlled). MCP tourne en stdio local, aucun canal réseau n'atteint cette variable. Voir threat model: docs/security/threat-model.md §fs-paths.
           fs.writeFileSync(accountPath, stamped, { mode: 0o600 });
         }
       } catch (keytarError) {
@@ -375,6 +392,7 @@ class AuthManager {
 
         const accountPath = getSelectedAccountPath();
         ensureParentDir(accountPath);
+        // eslint-disable-next-line security/detect-non-literal-fs-filename -- justif: accountPath via getSelectedAccountPath() → MS365_MCP_SELECTED_ACCOUNT_PATH env / XDG_STATE_HOME (opérateur-controlled). Fallback file-storage après keytar failure.
         fs.writeFileSync(accountPath, stamped, { mode: 0o600 });
       }
     } catch (error) {
@@ -613,12 +631,16 @@ class AuthManager {
       }
 
       const cachePath = getTokenCachePath();
+      // eslint-disable-next-line security/detect-non-literal-fs-filename -- justif: cachePath via getTokenCachePath() → MS365_MCP_TOKEN_CACHE_PATH env / XDG_STATE_HOME (opérateur-controlled). Logout path — suppression du cache local.
       if (fs.existsSync(cachePath)) {
+        // eslint-disable-next-line security/detect-non-literal-fs-filename -- justif: cachePath via MS365_MCP_TOKEN_CACHE_PATH env / XDG_STATE_HOME (opérateur-controlled). Logout unlink — même origine que existsSync ligne au-dessus.
         fs.unlinkSync(cachePath);
       }
 
       const accountPath = getSelectedAccountPath();
+      // eslint-disable-next-line security/detect-non-literal-fs-filename -- justif: accountPath via getSelectedAccountPath() → MS365_MCP_SELECTED_ACCOUNT_PATH env / XDG_STATE_HOME (opérateur-controlled). Logout path.
       if (fs.existsSync(accountPath)) {
+        // eslint-disable-next-line security/detect-non-literal-fs-filename -- justif: accountPath via MS365_MCP_SELECTED_ACCOUNT_PATH env / XDG_STATE_HOME (opérateur-controlled). Logout unlink — même origine que existsSync ligne au-dessus.
         fs.unlinkSync(accountPath);
       }
 

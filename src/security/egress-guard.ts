@@ -67,6 +67,7 @@ let originalFetch: typeof fetch | null = null;
 
 export function installEgressGuard(): void {
   const current = globalThis.fetch as PatchedFetch | undefined;
+  // eslint-disable-next-line security/detect-object-injection -- justif: PATCH_MARKER est un Symbol.for(...) module-scope, pas atteignable via input. Pattern idempotence patch.
   if (current && current[PATCH_MARKER]) {
     return;
   }
@@ -86,6 +87,7 @@ export function installEgressGuard(): void {
     return originalFetch(input, init);
   } as PatchedFetch;
 
+  // eslint-disable-next-line security/detect-object-injection -- justif: PATCH_MARKER est un Symbol.for(...) module-scope, pas atteignable via input. Pattern idempotence patch.
   patched[PATCH_MARKER] = true;
   globalThis.fetch = patched;
 }

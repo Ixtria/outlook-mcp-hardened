@@ -41,7 +41,7 @@ vi.mock('../src/generated/client.js', () => ({
 describe('Issue #258: HTTP/OAuth mode with empty MSAL cache', () => {
   let server: McpServer;
   let originalFetch: typeof global.fetch;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   let capturedHandler: ((...args: any[]) => any) | undefined;
 
   beforeEach(() => {
@@ -50,7 +50,7 @@ describe('Issue #258: HTTP/OAuth mode with empty MSAL cache', () => {
     capturedHandler = undefined;
 
     // Capture the registered tool handler
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     vi.spyOn(server, 'tool').mockImplementation(((...args: any[]) => {
       const name = args[0];
       const handler = args[args.length - 1];

@@ -57,6 +57,7 @@ export const DEFAULT_CLIENT_IDS: Record<CloudType, string> = {
  * @returns The default client ID for the specified cloud
  */
 export function getDefaultClientId(cloudType: CloudType = 'global'): string {
+  // eslint-disable-next-line security/detect-object-injection -- justif: cloudType est typé CloudType (union littéral 'global'|'china'), record fermé 2 clés — impossible d'atteindre une clé non whitelistée sans casser le type check.
   return DEFAULT_CLIENT_IDS[cloudType];
 }
 
@@ -67,6 +68,7 @@ export function getDefaultClientId(cloudType: CloudType = 'global'): string {
  * @throws Error if the cloud type is invalid
  */
 export function getCloudEndpoints(cloudType: CloudType = 'global'): CloudEndpoints {
+  // eslint-disable-next-line security/detect-object-injection -- justif: cloudType est typé CloudType (union littéral 'global'|'china'), record fermé 2 clés — impossible d'atteindre une clé non whitelistée sans casser le type check. Le `if (!endpoints)` juste après couvre l'échappement runtime si un caller contourne le type.
   const endpoints = CLOUD_ENDPOINTS[cloudType];
   if (!endpoints) {
     throw new Error(

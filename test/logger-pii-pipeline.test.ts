@@ -73,6 +73,7 @@ describe('winston pipeline — OBS-03 + OBS-05 + OBS-07 behavioral', () => {
       logger.info('timestamp check');
       const record = JSON.parse(capture.messages[0]!);
       // e.g. "2026-08-02T14:03:19.482Z"
+      // eslint-disable-next-line security/detect-unsafe-regex -- justif: regex ancrée (^...$), seul quantifieur variable = \d+ dans un groupe optionnel non-nested, suivi de \Z fixe. Pas de backtracking exponentiel possible (analyse manuelle 2026-08-02). Vérifie un timestamp ISO 8601 UTC dans un test — jamais exécutée sur input non-trusted.
       expect(record.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/);
     });
 

@@ -1,9 +1,9 @@
-/* eslint-disable security/detect-bidi-characters --
- * Tests for the BiDi/Unicode-obfuscation defense layer. Like the
- * implementation file, the source MUST contain the exact codepoints we
- * are asserting against. The strings below are INTENTIONAL attacker
- * payloads we are proving the defense neutralises.
- */
+// The previous `/* eslint-disable security/detect-bidi-characters */` block-
+// header was removed on 2026-08-02 (Stage 2 lint cleanup): grep for BiDi
+// codepoints (U+202A-U+202E, U+2066-U+2069) on this file returned zero, so
+// the directive was flagged as unused. Re-add it (with justif) if a future
+// test payload embeds real BiDi codepoints instead of the current escape-
+// sequence assertions.
 import { describe, expect, it } from 'vitest';
 import {
   UNTRUSTED_CLOSE,

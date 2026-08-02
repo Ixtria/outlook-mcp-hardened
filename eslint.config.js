@@ -59,6 +59,21 @@ export default [
     },
   },
   {
+    // Test files override — voir ADR-0004 "Exception Règle 2 — fichiers de test".
+    // Mocks + fixtures + assertions sur test data ont un profil de risque
+    // différent du runtime prod (0 attacker input, code jamais exécuté en prod).
+    // Alternative = ~91 justifs quasi-identiques qui noient la vraie discipline
+    // prod sous du bruit visuel. Portée limitée à test/** et src/**/__tests__/**.
+    // `detect-unsafe-regex` reste actif : on veut savoir si un test compile un
+    // pattern ReDoS-vulnerable (analyse manuelle + justif requise si intended).
+    files: ['test/**/*.{ts,tsx,js,mjs}', 'src/**/__tests__/**/*.{ts,tsx,js,mjs}'],
+    rules: {
+      '@typescript-eslint/no-explicit-any': 'off',
+      'security/detect-object-injection': 'off',
+      'security/detect-non-literal-fs-filename': 'off',
+    },
+  },
+  {
     ignores: [
       'node_modules/**',
       'dist/**',

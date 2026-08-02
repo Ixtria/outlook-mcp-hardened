@@ -38,6 +38,40 @@ Cet ADR adopte l'approche minimale.
 
 **Raison** : sans ça, on ne distingue pas "faux positif audité" de "vraie dette qu'on ignore". Un auditeur externe (Cure53, blog OSS security) le voit en 5 secondes.
 
+**Statut d'application (2026-08-02)** : **ENFORCED**.
+
+- `package.json` script `lint` : `eslint . --max-warnings 0` (script `lint:fix` idem).
+- Hook local `precommit` (`npm run precommit` → `npm run lint && npm run typecheck`) : refuse tout commit qui laisse passer un warning (activable via `npm run setup-hooks`).
+- Baseline atteinte : 150 → 0 warnings via le plan `docs/plans/2026-08-02-lint-cleanup-strategy.md` (Stages 1–4). Détail des concessions :
+  - Override `test/**` + `src/**/__tests__/**` sur `no-explicit-any`, `detect-object-injection`, `detect-non-literal-fs-filename` (voir Exception ci-dessous).
+  - 6 fixes propres en prod (dont 3 guards `Object.hasOwn` durcissent contre prototype-pollution).
+  - 48 `eslint-disable-next-line` avec `// justif:` spécifique par site (jamais générique copié-collé).
+  - `auth.ts:164` : `catch (_error)` + `logger.debug({ error })` — préserve la traçabilité diagnostic.
+- Toute régression future (ajout d'un warning non justifié) fait échouer `npm run lint` **et** la CI (workflow `.github/workflows/ci.yml`).
+
+#### Exception Règle 2 — fichiers de test
+
+**Portée** : `test/**/*.ts` et `src/**/__tests__/**/*.ts` uniquement (override dans `eslint.config.js`).
+
+**Règles désactivées sur ce périmètre** :
+- `@typescript-eslint/no-explicit-any` — mocks (`vi.fn<any>()`), signatures de fixtures, cast d'internals pour tester du privé.
+- `security/detect-object-injection` — assertions dynamiques sur test data contrôlée (`obj[fixtureKey]`), pas d'attacker input.
+- `security/detect-non-literal-fs-filename` — paths construits via `tmpdir() + randomBytes(...).toString('hex')`, tmpdir owned par le process de test.
+
+**Règles maintenues actives** (même sur test/**) :
+- `security/detect-unsafe-regex` — on veut savoir si un test compile un pattern ReDoS-vulnerable. Justif inline requise si intended (ex. test qui vérifie qu'un pattern connu-dangereux est bien rejeté).
+- Toutes les règles `error` du plugin security (`detect-eval-with-expression`, `detect-child-process`, `detect-bidi-characters`, etc.) — pas de raison de les relaxer sur test.
+
+**Justification de l'écart** :
+
+Les fichiers de test ne s'exécutent JAMAIS en runtime prod. Il n'y a pas de chemin où un input attaquant atteint ce code. Les warnings de ces règles sur test/** sont donc à ~100 % faux positifs (fixtures, mocks, tmpdir isolé). Les traiter à l'unité = 91 justifs quasi-identiques copiées-collées, ce qui **dégrade la lisibilité de la discipline prod** (le lecteur ne sait plus distinguer une justif fond d'une justif rituelle). L'override localise l'exception dans `eslint.config.js` (un seul lieu, tracé ici) au lieu de l'éparpiller sur 91 lignes.
+
+Le pattern est courant dans l'écosystème (Vercel, Next.js, sindresorhus utilisent des overrides eslint tests-only pour les règles heuristiques).
+
+**Contre-argument non retenu** : "un test pourrait un jour prendre un input runtime". Vrai en théorie, non observé en pratique dans ce repo (vitest, tests unitaires + intégration in-process). Si un test se met à consommer une source externe, il sortira des dossiers `test/**` ou `src/**/__tests__/**` (ex. `test/e2e/` avec un fixture générateur) et le override ne s'y appliquera pas s'il n'est pas whitelisté.
+
+**Trace** : cet override est le seul cas où une règle eslint est désactivée par config (vs. `eslint-disable-next-line` justifié). Toute extension future du override (nouvelles règles ajoutées, ou nouveaux dossiers whitelistés) **DOIT** amender cet ADR.
+
 ### Règle 3 — Tests comportementaux, pas de grep sur source
 
 - Un test qui contient `SOURCE_CODE.toContain('...')` ou pattern similaire (`grep AST`, regex sur `fs.readFileSync(path)`) **N'EST PAS ACCEPTÉ** en review.

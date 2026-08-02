@@ -29,7 +29,7 @@ vi.mock('../src/generated/client.js', () => ({
 describe('Multi-account support', () => {
   let server: McpServer;
   let graphClient: GraphClient;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- McpServer.tool() has ~6 overloads; spying it requires any
+   
   let toolSpy: any;
 
   beforeEach(() => {
@@ -145,9 +145,9 @@ describe('Multi-account support', () => {
         removeAccount: vi.fn(),
       };
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- handler type varies across McpServer.tool() overloads
+       
       let listAccountsHandler: ((...args: any[]) => any) | undefined;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- McpServer.tool() has ~6 overloads; capturing requires any
+       
       const captureSpy = vi.spyOn(server, 'tool').mockImplementation(((...args: any[]) => {
         // Capture the handler — it's the last argument regardless of overload
         const name = args[0];

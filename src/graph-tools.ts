@@ -232,6 +232,7 @@ async function executeGraphTool(
 
           case 'Query':
             if (paramValue !== '' && paramValue != null) {
+              // eslint-disable-next-line security/detect-object-injection -- justif: fixedParamName = remapODataParam(paramName), paramName vient de tool.parameters (endpoints.json — surface interne trusted, whitelist ~58 endpoints Mail/Cal). Pas d'input attaquant direct.
               queryParams[fixedParamName] = `${paramValue}`;
             }
             break;
@@ -259,6 +260,7 @@ async function executeGraphTool(
             break;
 
           case 'Header':
+            // eslint-disable-next-line security/detect-object-injection -- justif: fixedParamName = remapODataParam(paramName), paramName vient de tool.parameters (endpoints.json — surface interne trusted, whitelist ~58 endpoints Mail/Cal). Pas d'input attaquant direct.
             headers[fixedParamName] = `${paramValue}`;
             break;
         }
@@ -414,6 +416,7 @@ async function executeGraphTool(
 
           const nextQueryParams: Record<string, string> = {};
           for (const [key, value] of url.searchParams.entries()) {
+            // eslint-disable-next-line security/detect-object-injection -- justif: key/value viennent de url.searchParams.entries() sur nextLink (@odata.nextLink retourné par Graph API). Origine trusted (login.microsoftonline.com / graph.microsoft.com via egress-guard).
             nextQueryParams[key] = value;
           }
           nextOptions.queryParams = nextQueryParams;
@@ -569,6 +572,7 @@ export function registerGraphTools(
     for (const match of pathParamMatches) {
       const pathParamName = match[1];
       if (pathParamName && !(pathParamName in paramSchema)) {
+        // eslint-disable-next-line security/detect-object-injection -- justif: pathParamName vient d'un regex match /:([a-zA-Z]+)/g sur tool.path (endpoints.json). Regex restrictive, source trusted.
         paramSchema[pathParamName] = z.string().describe(`Path parameter: ${pathParamName}`);
       }
     }
@@ -587,6 +591,7 @@ export function registerGraphTools(
     // Override OData parameter descriptions with spec-gap guidance
     if (paramSchema['filter'] !== undefined || paramSchema['$filter'] !== undefined) {
       const key = paramSchema['$filter'] !== undefined ? '$filter' : 'filter';
+      // eslint-disable-next-line security/detect-object-injection -- justif: key est un littéral string parmi 2 valeurs déterminées par un `if (foo !== undefined)` juste au-dessus. Pas de dynamisme runtime.
       paramSchema[key] = z
         .string()
         .describe(
@@ -596,6 +601,7 @@ export function registerGraphTools(
     }
     if (paramSchema['search'] !== undefined || paramSchema['$search'] !== undefined) {
       const key = paramSchema['$search'] !== undefined ? '$search' : 'search';
+      // eslint-disable-next-line security/detect-object-injection -- justif: key est un littéral string parmi 2 valeurs déterminées par un `if (foo !== undefined)` juste au-dessus. Pas de dynamisme runtime.
       paramSchema[key] = z
         .string()
         .describe('KQL search query — wrap value in double quotes. Cannot combine with $filter.')
@@ -603,6 +609,7 @@ export function registerGraphTools(
     }
     if (paramSchema['select'] !== undefined || paramSchema['$select'] !== undefined) {
       const key = paramSchema['$select'] !== undefined ? '$select' : 'select';
+      // eslint-disable-next-line security/detect-object-injection -- justif: key est un littéral string parmi 2 valeurs déterminées par un `if (foo !== undefined)` juste au-dessus. Pas de dynamisme runtime.
       paramSchema[key] = z
         .string()
         .describe('Comma-separated fields to return, e.g. id,subject,from,receivedDateTime')
@@ -610,6 +617,7 @@ export function registerGraphTools(
     }
     if (paramSchema['orderby'] !== undefined || paramSchema['$orderby'] !== undefined) {
       const key = paramSchema['$orderby'] !== undefined ? '$orderby' : 'orderby';
+      // eslint-disable-next-line security/detect-object-injection -- justif: key est un littéral string parmi 2 valeurs déterminées par un `if (foo !== undefined)` juste au-dessus. Pas de dynamisme runtime.
       paramSchema[key] = z
         .string()
         .describe('Sort expression, e.g. receivedDateTime desc')
@@ -617,6 +625,7 @@ export function registerGraphTools(
     }
     if (paramSchema['top'] !== undefined || paramSchema['$top'] !== undefined) {
       const key = paramSchema['$top'] !== undefined ? '$top' : 'top';
+      // eslint-disable-next-line security/detect-object-injection -- justif: key est un littéral string parmi 2 valeurs déterminées par un `if (foo !== undefined)` juste au-dessus. Pas de dynamisme runtime.
       paramSchema[key] = z
         .number()
         .describe(
@@ -628,6 +637,7 @@ export function registerGraphTools(
     }
     if (paramSchema['skip'] !== undefined || paramSchema['$skip'] !== undefined) {
       const key = paramSchema['$skip'] !== undefined ? '$skip' : 'skip';
+      // eslint-disable-next-line security/detect-object-injection -- justif: key est un littéral string parmi 2 valeurs déterminées par un `if (foo !== undefined)` juste au-dessus. Pas de dynamisme runtime.
       paramSchema[key] = z
         .number()
         .describe('Items to skip for pagination. Not supported with $search.')
@@ -635,6 +645,7 @@ export function registerGraphTools(
     }
     if (paramSchema['count'] !== undefined || paramSchema['$count'] !== undefined) {
       const countKey = paramSchema['$count'] !== undefined ? '$count' : 'count';
+      // eslint-disable-next-line security/detect-object-injection -- justif: countKey est un littéral string parmi 2 valeurs déterminées par un `if (foo !== undefined)` juste au-dessus. Pas de dynamisme runtime.
       paramSchema[countKey] = z
         .boolean()
         .describe(
@@ -811,7 +822,14 @@ export function registerDiscoveryTools(
       }> = [];
 
       const queryLower = query?.toLowerCase();
-      const categoryDef = category ? TOOL_CATEGORIES[category] : undefined;
+      // HARDENED: `category` is user-supplied MCP tool argument. Guard with
+      // hasOwnProperty to block prototype-chain keys (__proto__, constructor…)
+      // even though TOOL_CATEGORIES is a small closed record.
+      const categoryDef =
+        category && Object.prototype.hasOwnProperty.call(TOOL_CATEGORIES, category)
+          ? // eslint-disable-next-line security/detect-object-injection -- justif: accès gardé par Object.prototype.hasOwnProperty.call ci-dessus — le ternaire court-circuite sur undefined pour toute clé non-own (bloque __proto__/constructor). eslint ne voit pas la garde statiquement.
+            TOOL_CATEGORIES[category]
+          : undefined;
 
       for (const [name, { tool, config }] of toolsRegistry) {
         if (categoryDef && !categoryDef.pattern.test(name)) {
