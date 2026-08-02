@@ -101,3 +101,18 @@ export function uninstallEgressGuard(): void {
     originalFetch = null;
   }
 }
+
+/**
+ * OBS-06/OBS-08 (2026-08-02) : runtime readiness check for the health
+ * endpoint. Returns true only when `globalThis.fetch` is the patched
+ * function installed by `installEgressGuard()` — a real runtime check
+ * (marker on the live binding), not a static config flag. `index.ts` calls
+ * `installEgressGuard()` unconditionally at process start, so this should be
+ * `true` for the entire process lifetime in production ; it reports `false`
+ * mainly for tests that never call `installEgressGuard()`.
+ */
+export function isEgressGuardActive(): boolean {
+  const current = globalThis.fetch as PatchedFetch | undefined;
+  // eslint-disable-next-line security/detect-object-injection -- justif: PATCH_MARKER est un Symbol.for(...) module-scope, pas atteignable via input. Même pattern que installEgressGuard ci-dessus.
+  return !!(current && current[PATCH_MARKER]);
+}

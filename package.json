@@ -1,6 +1,6 @@
 {
   "name": "@ixtria/outlook-mcp-hardened",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Security-hardened MCP server for Microsoft Outlook (Mail + Calendar). Fork of @softeria/ms-365-mcp-server with egress allowlist, audit trail, anti-prompt-injection, and read-first defaults.",
   "type": "module",
   "main": "dist/index.js",

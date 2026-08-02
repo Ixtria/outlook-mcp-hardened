@@ -131,3 +131,62 @@ Operators SHOULD :
 4. Cross-reference `request_id` between the audit stream and the winston
    application log for full-context debugging without needing to correlate
    on timestamps.
+
+## Health + Alerting policy (OBS-06 / OBS-08, 2026-08-02)
+
+HTTP mode exposes three health surfaces on the same Express app built by
+[`createHardenedOAuthApp`](../src/oauth/http-app.ts). stdio mode (the
+default) does not expose any of these — there is no HTTP listener to probe.
+
+| Endpoint  | Contract | Status codes |
+| --------- | -------- | ------------- |
+| `GET /live`   | Liveness. The process is answering HTTP. No component checks — a handler that returns at all means the event loop isn't deadlocked. | Always `200` while the process is up. |
+| `GET /ready`  | Readiness. `200` only when `mcp_server_ready && egress_guard_active && audit_logger_ready`, otherwise `503`. | `200` \| `503` |
+| `GET /health` | Backward-compatible alias of `/ready` — identical body shape and status semantics. Existing monitors that poll `/health` do not need to change. | `200` \| `503` |
+
+Response body (same shape for `/ready` and `/health`) :
+
+```json
+{
+  "status": "ok",
+  "version": "0.4.0",
+  "uptime_s": 1234.5,
+  "node_version": "v22.x.x",
+  "mcp_server_ready": true,
+  "egress_guard_active": true,
+  "audit_logger_ready": true
+}
+```
+
+Component semantics :
+
+- `mcp_server_ready` — the `/mcp` routes were mounted on this app instance
+  (`disableMcpRoutes` was not set). Structural check, not a per-request probe
+  of the MCP transport itself.
+- `egress_guard_active` — real runtime check on the live `globalThis.fetch`
+  binding (`isEgressGuardActive()`); `true` only when
+  `installEgressGuard()` has patched it. `index.ts` calls it unconditionally
+  at process start, so this should never flip to `false` in a correctly
+  booted production process.
+- `audit_logger_ready` — re-runs the RUNTIME-SEC-01 on-disk salt posture
+  check (`validateAuditSaltFile()`: permissions, ownership, symlink,
+  non-empty) on every call. A throw here means the audit trail's
+  pseudonymity guarantee cannot be trusted.
+
+### Alerting policy
+
+| Signal | Level | SLA to detect |
+| ------ | ----- | -------------- |
+| `GET /ready` (or `/health`) returns non-200 for > 2 consecutive probes | **Page** — traffic is being routed to (or kept on) an instance that cannot safely process requests. | ≤ 1 minute (standard k8s/systemd probe interval 10–30s × 2 failures). |
+| `GET /live` returns non-200, or times out | **Page** — the process is unresponsive; the orchestrator should already be restarting it. | ≤ 1 minute. |
+| `audit_logger_ready: false` sustained > 5 minutes | **Page** — audit trail integrity is degraded; every Graph call in this window is unaccounted for once resolved. | ≤ 5 minutes. |
+| `egress_guard_active: false` (any duration) | **Page** — P0. Should be structurally impossible; if observed, treat as a boot-path regression or supply-chain concern until proven otherwise. | Immediate. |
+| `mcp_server_ready: false` in a deployment that expects MCP traffic | **Ticket** — likely an intentional `disableMcpRoutes` config in a non-MCP health-check-only deployment; verify against the operator's intended topology before escalating. | ≤ 1 business day. |
+| Audit event count anomaly (e.g. `oauth.mcp.reject` burst, or total event volume drops to zero while traffic continues) | **Ticket** (escalate to page if sustained > 15 min or count of `oauth.egress.violation` > 0) — see existing catalog guidance above. | ≤ 15 minutes for a burst; ≤ 1 hour for a silent drop. |
+
+Rationale for the page/ticket split : readiness and egress-guard failures
+mean the server is actively mis-serving or has lost a hard security
+boundary — both warrant waking someone up. Audit-count anomalies and an
+intentionally-disabled MCP mount are operationally meaningful but not
+immediately dangerous, so they route to a ticket for the next business
+cycle unless they compound into a sustained pattern.

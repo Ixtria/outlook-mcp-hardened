@@ -6,7 +6,24 @@ Versionning : [SemVer](https://semver.org/lang/fr/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Added — Phase C HTTP-public deployment kit (2026-06-02)
+### Planned v0.5
+
+Reportés depuis "Planned v0.4" (non traités dans le cycle de remédiation 2026-08-02) :
+
+- Architectural refactor : drop `mcpAuthRouter` mount, all OAuth endpoints hand-rolled (eliminates SDK-imported attack surface — N4 META recommendation)
+- HMAC verifier cache (60s TTL) to reduce Graph `/me` round-trips
+- `/token` endpoint RFC 6749 §5.2 compliance (currently 500 instead of 400 invalid_grant)
+- `pkceSweepHandle` graceful shutdown
+- AAD error body sanitization (trace_id, correlation_id stripped before log)
+
+Nouveaux :
+- SUP-01-PROV : activer `npm publish --provenance` post OIDC trusted publishing configuré côté npm (workflow `publish.yml` dormant préparé)
+
+## [0.4.0] — 2026-08-02 — remédiation post-audit stratégique
+
+### Added — Phase C HTTP-public deployment kit (mergé 2026-06-02, jamais release)
+
+Intégré à [0.4.0] car la branche est restée uncommitted release-side jusqu'à cette version :
 
 - `deploy/outlook-mcp.service` — hardened systemd unit (NoNewPrivileges, ProtectSystem=strict, ProtectHome, PrivateTmp, PrivateDevices, ProtectKernel*, MemoryDenyWriteExecute, RestrictNamespaces, RestrictAddressFamilies AF_UNIX/INET/INET6, CapabilityBoundingSet=, SystemCallFilter=@system-service, resource limits)
 - `deploy/outlook-mcp.env.example` — env file template (Azure App Reg + PUBLIC_URL + TRUSTED_PROXIES + optional CORS/write policy/rate-limit)
@@ -16,13 +33,70 @@ Versionning : [SemVer](https://semver.org/lang/fr/spec/v2.0.0.html).
 - `deploy/docker-compose.yml` — outlook-mcp + Caddy stack (read_only, cap_drop ALL, no-new-privileges)
 - `docs/HANDOFF_INFRA.md` (416 lines) — end-to-end deployment handoff : DNS → TLS → reverse proxy → systemd → first auth → monitoring → logrotate → rollback → security posture verification checklist
 
-### Planned v0.4
+### Highlights
 
-- Architectural refactor : drop `mcpAuthRouter` mount, all OAuth endpoints hand-rolled (eliminates SDK-imported attack surface — N4 META recommendation)
-- HMAC verifier cache (60s TTL) to reduce Graph `/me` round-trips
-- `/token` endpoint RFC 6749 §5.2 compliance (currently 500 instead of 400 invalid_grant)
-- `pkceSweepHandle` graceful shutdown
-- AAD error body sanitization (trace_id, correlation_id stripped before log)
+- 34/37 tickets fermés (audit stratégique + remédiation systémique)
+- CI + Security + Scorecard + ZAP verts, `--max-warnings 0` enforced
+- +132 tests comportementaux (391 → 523), +19 tests de finition (health/live/ready + chaos audit-salt étendu) → 542
+- Discipline ADR-0004 : "pattern B green-washing" prédit par contradictoire GPT-5.5 évité en direct
+
+### Sécurité
+
+- Fix P0 SEC-01 refresh token en clair (regression prévention comportementale)
+- Fix SEC-02 regex-injection (suppress justif codeql)
+- SEC-05 pin tous actions par SHA 40-char (supply chain)
+- RUNTIME-SEC-01 posture runtime (validation boot permissions salt, TOCTOU, symlink refuse)
+- OBS-01 winston rotation (10 MB × 5 fichiers)
+- OBS-02 audit events OAuth explicites (`docs/AUDIT_EVENTS.md` source de vérité)
+- OBS-03/04/05/07 redactor deep récursif + splat unwrap + JSON format + request_id correlation
+- OBS-06 health endpoint enrichi (`version`, `uptime_s`, `node_version`, `mcp_server_ready`, `egress_guard_active`, `audit_logger_ready`) + politique d'alerting documentée (`docs/AUDIT_EVENTS.md` §Health + Alerting policy)
+- OBS-08 `/live` (liveness) vs `/ready` (readiness) différenciés à la k8s ; `/health` devient un alias rétro-compatible de `/ready`
+- TEST-04 chaos audit-salt étendu : TOCTOU documenté, symlink swap mid-flight refusé, NUL-byte path (vecteur `XDG_STATE_HOME` structurellement fermé par la troncature POSIX des env vars — vérifié empiriquement), path > PATH_MAX refusé proprement, FS read-only pendant rotation → erreur explicite
+
+### Automation
+
+- AUTO-01 Dependabot auto-merge PATCH only (correction post-contradictoire : minor exclu pour OAuth/sécu)
+- AUTO-02 OpenSSF Scorecard workflow
+- AUTO-03 StepSecurity harden-runner (mode audit)
+- AUTO-04 Node 22/24 bump + engines >=22
+
+### Governance
+
+- GOV-01 nFADP posture déclarative self-attested (`docs/COMPLIANCE-nFADP.md` — auto-attesté, non-audité, sans engagement légal)
+- GOV-02 threat model rejoué Niveau B (`docs/threat-model/2026-08-02-oauth-proxy-niveau-b.md`)
+- GOV-03 incident response runbook (`docs/INCIDENT-RESPONSE.md`)
+- GOV-04 baseline OSS (issue/PR templates + CoC + security.txt)
+- GOV-05 RELEASING.md + deprecation policy + support matrix
+
+### Supply chain
+
+- SUP-01 SBOM CycloneDX workflow dormant (`publish.yml`), à activer post OIDC npm
+- Post background review : `publish.yml` hardened (contents:read least-priv, persist-credentials:false, --ignore-scripts, harden-runner audit)
+
+### Tests
+
+- TEST-01 harness HTTP full-stack + E2E 8 routes OAuth (fixture réutilisable)
+- TEST-02 PKCE flood 10 001 req concurrentes
+- TEST-03 contract MCP protocol
+- TEST-06 conformance labellée par RFC (7591 / 6749 / 9700 / 8707)
+- MAINT-TEST-BEHAV : refactor http-routes extraction (0% → 78% coverage sur `src/oauth/http-routes.ts`)
+
+### Discipline
+
+- MAINT-LINT-0 : 150 warnings → 0, `--max-warnings 0` enforced en CI
+- ADR-0004 (discipline maintenance) créé + amendé pour exception `test/**`
+
+### Breaking (mineur)
+
+- Node.js >= 22 (engines resserré, ancien >= 18)
+
+### Contributors
+
+Cross-vendor : Claude Opus 4.7 (implémentation) + Codex GPT-5.5 (contradictoire structurel × 3 passes).
+
+### Métriques session
+
+- 3 workflows orchestrés + 2 agents individuels, ~2h de travail réel, ~$163 en tokens
 
 ## [0.3.0] — 2026-06-02 — pre-publication security audit complete
 

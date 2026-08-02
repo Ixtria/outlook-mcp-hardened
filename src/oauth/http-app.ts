@@ -53,6 +53,9 @@ import {
   type PkceStoreEntry,
 } from './http-routes.js';
 import { requestContext } from '../request-context.js';
+import { validateAuditSaltFile } from '../security/audit-logger.js';
+import { isEgressGuardActive } from '../security/egress-guard.js';
+import { version } from '../version.js';
 
 const MAX_PKCE_STORE_SIZE_DEFAULT = 10_000;
 const MAX_STATE_LENGTH_DEFAULT = 256;
@@ -508,10 +511,63 @@ export function createHardenedOAuthApp(deps: HardenedOAuthAppDeps): HardenedOAut
     app.post('/mcp', bearerAuthMiddleware, mcpHandler('post'));
   }
 
-  // ─── health ─────────────────────────────────────────────────────────────
+  // ─── health / liveness / readiness (OBS-06 + OBS-08, 2026-08-02) ────────
   app.get('/', (_req, res) => {
     res.send('Microsoft 365 MCP Server is running');
   });
+
+  // OBS-08 : k8s-style liveness vs readiness split.
+  //   /live  — the process is alive and the event loop is answering HTTP.
+  //            Always 200 here ; a deadlocked process wouldn't run this
+  //            handler at all, so there is no failure branch to encode.
+  //            An orchestrator uses this to decide "restart the container".
+  //   /ready — the service is ready to receive traffic : all three security
+  //            components declare themselves initialized. An orchestrator
+  //            uses this to decide "route traffic here" (no restart implied
+  //            by a 503 — it just stops sending new requests).
+  //   /health — OBS-06 original endpoint, kept as a backward-compatible
+  //            alias of /ready (same shape, same status code semantics).
+  app.get('/live', (_req, res) => {
+    res.status(200).json({
+      status: 'ok',
+      version,
+      uptime_s: process.uptime(),
+      node_version: process.version,
+    });
+  });
+
+  const readinessHandler = (_req: Request, res: Response): void => {
+    // audit_logger_ready : reuse the RUNTIME-SEC-01 boot-time posture check
+    // (permissions, ownership, symlink, non-empty). A throw here means the
+    // audit trail cannot be trusted — the service is not ready.
+    let auditLoggerReady = true;
+    try {
+      validateAuditSaltFile();
+    } catch {
+      auditLoggerReady = false;
+    }
+
+    // egress_guard_active : real check on the live `globalThis.fetch`
+    // binding — true only when installEgressGuard() has patched it.
+    const egressGuardActive = isEgressGuardActive();
+
+    // mcp_server_ready : the /mcp routes were mounted on this app instance.
+    const mcpServerReady = !disableMcpRoutes;
+
+    const ready = mcpServerReady && egressGuardActive && auditLoggerReady;
+    res.status(ready ? 200 : 503).json({
+      status: ready ? 'ok' : 'error',
+      version,
+      uptime_s: process.uptime(),
+      node_version: process.version,
+      mcp_server_ready: mcpServerReady,
+      egress_guard_active: egressGuardActive,
+      audit_logger_ready: auditLoggerReady,
+    });
+  };
+
+  app.get('/ready', readinessHandler);
+  app.get('/health', readinessHandler);
 
   // ─── global error handler (N4-I2) ───────────────────────────────────────
   app.use(
