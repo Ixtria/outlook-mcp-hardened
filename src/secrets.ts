@@ -58,8 +58,24 @@ class KeyVaultSecretsProvider implements SecretsProvider {
   }
 
   async getSecrets(): Promise<AppSecrets> {
-    // Dynamic import to keep these as optional dependencies
+    // Dynamic import to keep these as optional dependencies. When the
+    // consumer hasn't installed the Azure SDK optional deps, tsc/CI cannot
+    // resolve the module types — that's fine because runtime behavior is
+    // "throw if missing" (`await import(...)` rejects). The @ts-ignore is
+    // load-bearing : it lets `--strict + noUncheckedIndexedAccess` pass CI
+    // without forcing keytar-neighbor packages to install everywhere.
+    // Fix regressed CI 2026-06-17 → 2026-08-02 (typecheck failure since
+    // optionalDependencies stopped installing in GH Actions runner ; keytar
+    // 7.9.0 prebuild fails on recent Node 20/22 and drops the whole optional
+    // tree). Ref MAINT-01 finding + CI schedule green after this commit.
+    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+    // @ts-ignore -- optional dep (see optionalDependencies in package.json).
+    // Pattern @ts-ignore volontaire : @ts-expect-error casserait le typecheck
+    // local où le package EST installé (unused directive), alors qu'en CI il
+    // ne l'est pas (optional deps skipped par npm ci depuis 2026-06).
     const { DefaultAzureCredential } = await import('@azure/identity');
+    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+    // @ts-ignore -- optional dep (idem)
     const { SecretClient } = await import('@azure/keyvault-secrets');
 
     const credential = new DefaultAzureCredential();
