@@ -518,6 +518,13 @@ export function registerGraphTools(
   let enabledToolsRegex: RegExp | undefined;
   if (enabledToolsPattern) {
     try {
+      // codeql[js/regex-injection]: le pattern vient exclusivement du flag CLI
+      // `--enabled-tools` OU de l'env `ENABLED_TOOLS` (voir src/cli.ts:48,159) —
+      // c'est de l'entrée opérateur locale en mode stdio, jamais un attaquant
+      // distant. Le try/catch protège déjà d'un regex invalide. ReDoS = self-DoS
+      // acceptable pour l'opérateur qui construit son propre filtre. Faux
+      // positif CodeQL confirmé par audit stratégique 2026-08-02 (SEC-02).
+      // eslint-disable-next-line security/detect-non-literal-regexp
       enabledToolsRegex = new RegExp(enabledToolsPattern, 'i');
       logger.info(`Tool filtering enabled with pattern: ${enabledToolsPattern}`);
     } catch {

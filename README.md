@@ -5,9 +5,11 @@
 [![mcp](https://img.shields.io/badge/protocol-MCP-purple.svg)](https://modelcontextprotocol.io/)
 [![tests](https://img.shields.io/badge/tests-380%20passing-brightgreen.svg)](#testing)
 [![security audit](https://img.shields.io/badge/security--audit-Tier%200%2B1%2B2%20%E2%9C%93-success.svg)](./SECURITY.md)
-[![npm audit](https://img.shields.io/badge/npm%20audit-0%20vulnerabilities-brightgreen.svg)](#supply-chain)
+[![Security audit](https://img.shields.io/badge/security-see%20SECURITY.md-informational.svg)](./SECURITY.md)
 
-A **security-hardened**, **client-agnostic** Model Context Protocol (MCP) server for **Microsoft Outlook** (Mail + Calendar). Designed for self-hosting by Swiss SMEs (nFADP-compatible posture), independent professionals, and anyone who needs Outlook through MCP **without trusting a third-party SaaS bridge**.
+A **security-hardened**, **client-agnostic** Model Context Protocol (MCP) server for **Microsoft Outlook** (Mail + Calendar). Designed for self-hosting by independent professionals, small teams, and anyone who needs Outlook through MCP **without trusting a third-party SaaS bridge**.
+
+> ⚠️ **Status 2026-08-02** : projet en remédiation sécurité active suite audit stratégique. Voir [`docs/plans/2026-08-02-audit-maintenance-strategique.md`](./docs/plans/2026-08-02-audit-maintenance-strategique.md) et [`TICKETS.md`](./TICKETS.md). La posture "hardened" reste défendable niveau **OSS solo-mainteneur security-serious** ; les contrôles runtime (audit trail OAuth, coverage server.ts, backlog Dependabot) sont en cours de fiabilisation — ne pas prendre les badges d'anciennes versions pour argent comptant tant que Lot 1 n'est pas mergé.
 
 Apache-2.0, no telemetry, no phone-home, OS keychain for tokens, audited egress allowlist. Built on the official [MCP SDK](https://github.com/modelcontextprotocol/typescript-sdk) and `@azure/msal-node`. Fork of [`@softeria/ms-365-mcp-server`](https://github.com/softeria/ms-365-mcp-server) with the surface narrowed and the boundaries instrumented.
 
@@ -24,11 +26,11 @@ Apache-2.0, no telemetry, no phone-home, OS keychain for tokens, audited egress 
 | Default write policy | write tools registered | **read-only by default** — `--enable-send` / `--enable-write` opt-in required |
 | Outbound network | trust the network | **hardcoded allowlist** : `login.microsoftonline.com`, `graph.microsoft.com`. Any other fetch → `EgressViolationError` |
 | Token storage | env var or file | **OS keychain** (`keytar`) when available, file fallback with restricted perms |
-| Audit trail | none | **JSON line on stderr** per Graph call (tool, method, path, scopes, **HMAC-SHA256-hashed account**, status, duration) |
+| Audit trail | none | **JSON line on stderr** per outbound Graph call (tool, method, path, scopes, **HMAC-SHA256-hashed account**, status, duration). **OAuth events (`/authorize`, `/token`, `/register`, verify fail) non couverts en v0.3 — voir tickets OBS-02 / TEST-06.** |
 | Email body returned to LLM | raw | wrapped in `<untrusted_content>` with Unicode-obfuscation strip + tag neutralisation (defense against [Plane-14 steganography attacks](https://en.wikipedia.org/wiki/Tags_(Unicode_block))) |
 | OAuth ingress (HTTP mode) | passthrough | **hardened proxy** : exact-match `redirect_uri`, PKCE S256 mandatory, scope intersection, trust-proxy IP allowlist, [ADR-0003](docs/adr/0003-pivot-niveau-b-oauth-proxy-hardened.md) |
 | Logs PII | raw emails / bodies | **redacted** : emails → `[email:HASH]` (correlatable to audit-log entries), Bearer tokens → `[redacted]`, JWTs → `[JWT redacted]` |
-| Telemetry | none | **contractually zero** — CI blocks new dependencies that phone home |
+| Telemetry | none | **contractually zero** — no analytics, no phone-home in first-party code. (License-checker CI job enforces permissive licenses ; automated phone-home detection on new deps is roadmap, cf. ticket SEC-05.) |
 | License | MIT | Apache-2.0 (MIT attribution retained) |
 
 ## Quick start
@@ -140,7 +142,7 @@ Property-based tests in [`src/oauth/__tests__/property-based.test.ts`](./src/oau
 ## Supply chain
 
 ```bash
-npm audit                  # 0 vulnerabilities (verified 2026-06-02)
+npm audit                  # runs against production deps ; see SECURITY.md for current status
 ```
 
 Direct production dependencies (8) :

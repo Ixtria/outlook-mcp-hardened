@@ -2,7 +2,9 @@
 
 ## Qu'est-ce que c'est ?
 
-Fork hardening de `@softeria/ms-365-mcp-server` (MIT) pour exposer Microsoft Outlook (Mail + Calendar) via MCP, avec un focus sécurité et transparence adapté aux PME suisses (nFADP-compatible).
+Fork hardening de `@softeria/ms-365-mcp-server` (MIT) pour exposer Microsoft Outlook (Mail + Calendar) via MCP, avec un focus sécurité et transparence.
+
+> ⚠️ Le claim "PME suisse nFADP-compatible" a été retiré de l'entête README + topics GitHub le 2026-08-02 suite audit stratégique (STRAT-03 : aucun `docs/COMPLIANCE-nFADP.md` publié). Le claim peut être remis quand GOV-01 sera livré (RoPA + DPIA simplifiée + DFD). En attendant : posture "OSS solo-mainteneur security-serious", pas de prétention compliance formelle.
 
 Publié en OSS sous licence Apache-2.0 par Ixtria.
 
@@ -162,3 +164,11 @@ Le destinataire a reçu, archivé, et journalisé ton message dans `~/Projets/<d
 **Si tu as VRAIMENT besoin d'un retour synchrone**, utilise `peer-ask.sh` (timeout 300s max). Sinon, frame correctement à l'humain : *"Notification envoyée à peer X (pas de retour attendu par design). Il la verra à sa prochaine session interactive."*
 
 **Ne JAMAIS conclure** "le peer X est en panne" depuis l'absence de réponse à un message `expects-reply: false`.
+
+<!-- agent-hub-bus-block -->
+## Agent-hub bus
+
+This project is registered as bus peer `mcp-outlook` (protocol v1).
+Marker: `.claude/agent-hub-peer.lock`. Hub: `/home/jimb/Projets/agent-hub`.
+Protocol reference: `/home/jimb/Projets/agent-hub/docs/PROTOCOL.md`.
+Bus-context preamble is injected by handler at runtime (see handler V2.1, PR #134).

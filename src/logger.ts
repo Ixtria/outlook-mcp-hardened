@@ -64,12 +64,24 @@ const logger = winston.createLogger({
     })
   ),
   transports: [
+    // HARDENED (OBS-01 fix, 2026-08-02) : File transports MUST have rotation
+    // caps, otherwise mcp-server.log grows unbounded and fills the disk.
+    // Audit stratégique MAINT-03 : winston.transports.File sans maxsize +
+    // maxFiles + tailable = disque plein garanti à moyen terme (usage prod
+    // perso Jimmy). Choix : 10 MB × 5 fichiers = 50 MB cap (raisonnable),
+    // tailable pour que le fichier "actif" reste toujours mcp-server.log.
     new winston.transports.File({
       filename: path.join(logsDir, 'error.log'),
       level: 'error',
+      maxsize: 10 * 1024 * 1024,
+      maxFiles: 5,
+      tailable: true,
     }),
     new winston.transports.File({
       filename: path.join(logsDir, 'mcp-server.log'),
+      maxsize: 10 * 1024 * 1024,
+      maxFiles: 5,
+      tailable: true,
     }),
   ],
 });

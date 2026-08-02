@@ -155,6 +155,10 @@ function buildScopesFromEndpoints(
   let enabledToolsRegex: RegExp | undefined;
   if (enabledToolsPattern) {
     try {
+      // codeql[js/regex-injection]: pattern vient du flag CLI --enabled-tools /
+      // env ENABLED_TOOLS (opérateur local stdio). Try/catch protège du regex
+      // invalide. Faux positif CodeQL confirmé par audit 2026-08-02 (SEC-02).
+      // eslint-disable-next-line security/detect-non-literal-regexp
       enabledToolsRegex = new RegExp(enabledToolsPattern, 'i');
       logger.info(`Building scopes with tool filter pattern: ${enabledToolsPattern}`);
     } catch (error) {

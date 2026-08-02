@@ -13,7 +13,7 @@
 #
 # The hardening directives below are based on https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html
 # and on the analysis run by `systemd-analyze security outlook-mcp.service`
-# (target : security score < 1.5 = "OK" rating).
+# (target : security score ≤ 2.5 = "OK" rating — cohérent avec docs/HANDOFF_INFRA.md).
 
 [Unit]
 Description=outlook-mcp-hardened — Microsoft Outlook MCP server (HTTP-public)
