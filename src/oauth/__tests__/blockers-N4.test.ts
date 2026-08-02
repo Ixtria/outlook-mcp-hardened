@@ -1,8 +1,19 @@
 /**
- * Regression tests for N4 expert review BLOCKERS B1+B2+B3 fixed in server.ts
- * and oauth-provider.ts. These assert the INVARIANTS — the actual HTTP
- * surface tests would need a running server, which we already exercise
- * via the existing http-routes.test.ts integration suite.
+ * Regression tests for N4 expert review BLOCKERS B1+B2+B3.
+ *
+ * HISTORY (MAINT-TEST-BEHAV, 2026-08-02) :
+ *   B1 / B2 were originally asserted here by reading `server.ts` and
+ *   grepping for handler strings — the pattern ADR-0004 rule 3 now
+ *   forbids ("SOURCE.toContain sur fs.readFileSync"). The behavior itself
+ *   is now covered by `test/lot1-behavior.test.ts` via real HTTP round
+ *   trips against the same factories (`createRejectPostAuthorizeHandler`,
+ *   `createAuthorizeHandler`) that `server.ts` wires in production. The
+ *   assertions below have been narrowed to :
+ *     - N4-B1 / N4-B2 → point at the extracted `http-routes.ts` (same
+ *       greppable location as the behavior it locks in) so a rewrite of
+ *       the factories fails BOTH here and in the behavioral test.
+ *     - N4-B3 → still points at `oauth-provider.ts` (untouched by the
+ *       MAINT-TEST-BEHAV extraction).
  */
 
 import { describe, expect, it } from 'vitest';
@@ -11,32 +22,32 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const HTTP_ROUTES_TS = readFileSync(join(__dirname, '..', 'http-routes.ts'), 'utf8');
 const SERVER_TS = readFileSync(join(__dirname, '..', '..', 'server.ts'), 'utf8');
 const PROVIDER_TS = readFileSync(join(__dirname, '..', '..', 'oauth-provider.ts'), 'utf8');
 
 describe('N4 BLOCKERS regression (Phase B 2026-06-02)', () => {
   describe('N4-B1 — PKCE required (RFC 9700)', () => {
-    it('GET /authorize handler refuses missing code_challenge', () => {
+    it('createAuthorizeHandler refuses missing code_challenge', () => {
       // The handler must contain a guard for `!clientCodeChallenge` returning
       // 400 invalid_request before any forward to AAD.
-      expect(SERVER_TS).toMatch(/if\s*\(\s*!\s*clientCodeChallenge\s*\)/);
-      expect(SERVER_TS).toContain('PKCE mandatory');
+      expect(HTTP_ROUTES_TS).toMatch(/if\s*\(\s*!\s*clientCodeChallenge\s*\)/);
+      expect(HTTP_ROUTES_TS).toContain('PKCE mandatory');
     });
 
-    it('GET /authorize refuses code_challenge_method != S256', () => {
-      // Existing check (Phase A fix) for method-name validation.
-      expect(SERVER_TS).toMatch(/code_challenge_method must be S256/);
+    it('createAuthorizeHandler refuses code_challenge_method != S256', () => {
+      expect(HTTP_ROUTES_TS).toMatch(/code_challenge_method must be S256/);
     });
   });
 
   describe('N4-B2 — POST /authorize bypass blocked', () => {
-    it('app.post(/authorize) handler exists and returns 405', () => {
-      expect(SERVER_TS).toMatch(/app\.post\(\s*['"]\/authorize['"]/);
-      expect(SERVER_TS).toMatch(/status\(\s*405\s*\)/);
-      expect(SERVER_TS).toMatch(/Allow.*GET/);
+    it('createRejectPostAuthorizeHandler exists and returns 405', () => {
+      expect(HTTP_ROUTES_TS).toMatch(/createRejectPostAuthorizeHandler/);
+      expect(HTTP_ROUTES_TS).toMatch(/status\(\s*405\s*\)/);
+      expect(HTTP_ROUTES_TS).toMatch(/Allow.*GET/);
     });
 
-    it('POST handler is registered BEFORE mcpAuthRouter mount', () => {
+    it('server.ts registers POST /authorize BEFORE mcpAuthRouter mount', () => {
       const postAuthorizeIdx = SERVER_TS.indexOf("app.post('/authorize'");
       const mcpAuthRouterIdx = SERVER_TS.indexOf('mcpAuthRouter({');
       expect(postAuthorizeIdx).toBeGreaterThan(0);

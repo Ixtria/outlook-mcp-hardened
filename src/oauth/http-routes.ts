@@ -17,10 +17,12 @@
  * wire them into a mini Express app with controlled deps and assert behavior.
  */
 
+import crypto from 'node:crypto';
 import type { Request, Response, RequestHandler } from 'express';
 import { validateRedirectUri } from './redirect-uri.js';
 import { intersectScopes, parseScope, serializeScope } from './scope.js';
 import { allRegisteredScopes, META_SCOPES } from './registered-clients.js';
+import { getCloudEndpoints, type CloudType } from '../cloud-config.js';
 
 export interface RegisterHandlerDeps {
   /** Static allowlist of acceptable redirect_uris (e.g. Claude.ai callbacks). */
@@ -153,4 +155,257 @@ export function validateAuthorizeRedirectUri(
     return { ok: false, reason: 'not_in_allowlist' };
   }
   return { ok: true };
+}
+
+/**
+ * Two-leg PKCE store entry (server↔client challenge + server↔AAD verifier).
+ * Extracted from server.ts alongside createAuthorizeHandler so the handler
+ * can be tested through Express in isolation (MAINT-TEST-BEHAV / TEST-01).
+ */
+export interface PkceStoreEntry {
+  clientCodeChallenge: string;
+  clientCodeChallengeMethod: string;
+  serverCodeVerifier: string;
+  createdAt: number;
+}
+
+export interface RejectPostAuthorizeDeps {
+  logger: {
+    info: (msg: string, meta?: unknown) => void;
+    warn: (msg: string, meta?: unknown) => void;
+  };
+}
+
+/**
+ * HARDENED (N4 B2 BLOCKER fix 2026-06-02): factored 405 interceptor for
+ * POST /authorize. OAuth 2.0 RFC 6749 §3.1 says the authorization endpoint
+ * MUST support GET; POST is optional. We support only GET and reject POST
+ * with 405 because the SDK's mcpAuthRouter would otherwise catch POST
+ * /authorize and bypass our hand-rolled PKCE + scope + client_id checks.
+ *
+ * Extracted from src/server.ts inline handler (MAINT-TEST-BEHAV, 2026-08-02)
+ * so the interception can be exercised via a supertest-style behavioral test.
+ */
+export function createRejectPostAuthorizeHandler(
+  deps: RejectPostAuthorizeDeps
+): RequestHandler {
+  const { logger } = deps;
+  return (req: Request, res: Response) => {
+    logger.warn('Rejected POST /authorize (only GET is supported)', {
+      client_ip: (req as Request & { clientIp?: string }).clientIp,
+    });
+    res
+      .status(405)
+      .set('Allow', 'GET')
+      .type('text/plain')
+      .send(
+        'method_not_allowed: /authorize accepts GET only. POST bypasses required PKCE+scope validation.'
+      );
+  };
+}
+
+export interface AuthorizeHandlerDeps {
+  /** Static allowlist of acceptable redirect_uris. */
+  allowedRedirectUris: ReadonlySet<string>;
+  /** Space-separated string of all scopes any registered client may ever request. */
+  registeredScopesString: string;
+  /** Closure returning the writePolicy-aware set of known Graph scopes. */
+  knownScopes: () => Set<string>;
+  /** Logger. */
+  logger: {
+    info: (msg: string, meta?: unknown) => void;
+    warn: (msg: string, meta?: unknown) => void;
+  };
+  /** Microsoft client identity + cloud used to build the AAD authorization URL. */
+  secrets: { clientId: string; tenantId?: string; cloudType: CloudType };
+  /** Shared two-leg PKCE store keyed by OAuth `state`. Must persist across the
+   *  matching /token exchange (server.ts owns the singleton). */
+  pkceStore: Map<string, PkceStoreEntry>;
+  /** Bounded store size (default 10_000). */
+  maxPkceStoreSize?: number;
+  /** Max `state` param length (default 256). */
+  maxStateLength?: number;
+  /** Injectable clock — deterministic tests. Defaults to Date.now. */
+  now?: () => number;
+  /** Injectable server-side PKCE verifier generator. Defaults to crypto.randomBytes. */
+  generateServerCodeVerifier?: () => string;
+}
+
+/**
+ * HARDENED (ADR-0003 D2): /authorize handler extracted from src/server.ts
+ * (MAINT-TEST-BEHAV, 2026-08-02). All security invariants preserved verbatim:
+ *
+ *   - N4 B1 : PKCE mandatory (code_challenge required)
+ *   - N0 B1 : method must be S256 (no plain downgrade)
+ *   - N0 B2 : `state` bounded to MAX_STATE_LENGTH; pkceStore bounded LRU
+ *   - N0 I3 / N4-I1 : no Host header reflection — AAD URL is derived from
+ *     secrets.cloudType/tenantId, not from req.get('host')
+ *   - codex I2 : errors are LOCAL (no Location header) before redirect_uri
+ *     is validated
+ *   - N1-I2 : no scope fallback; empty intersection → 400 invalid_scope
+ *
+ * This is the SAME code that ran inline in server.ts before extraction — the
+ * only change is that dependencies are injected instead of closed over via
+ * `this`. Server.ts wires it with real deps; tests wire it with mocks.
+ */
+export function createAuthorizeHandler(deps: AuthorizeHandlerDeps): RequestHandler {
+  const {
+    allowedRedirectUris,
+    registeredScopesString,
+    knownScopes,
+    logger,
+    secrets,
+    pkceStore,
+    maxPkceStoreSize = 10_000,
+    maxStateLength = 256,
+    now = Date.now,
+    generateServerCodeVerifier = () => crypto.randomBytes(32).toString('base64url'),
+  } = deps;
+
+  return (req: Request, res: Response) => {
+    const url = new URL(req.url, `${req.protocol}://${req.get('host') ?? 'localhost'}`);
+    const tenantId = secrets.tenantId || 'common';
+    const clientId = secrets.clientId;
+    const cloudEndpoints = getCloudEndpoints(secrets.cloudType);
+    const microsoftAuthUrl = new URL(
+      `${cloudEndpoints.authority}/${tenantId}/oauth2/v2.0/authorize`
+    );
+
+    // Validate redirect_uri BEFORE producing any Location header (codex I2).
+    const redirectCheck = validateAuthorizeRedirectUri(
+      url.searchParams.get('redirect_uri'),
+      allowedRedirectUris
+    );
+    if (!redirectCheck.ok) {
+      if (redirectCheck.reason === 'not_in_allowlist') {
+        logger.warn('Rejected /authorize: redirect_uri not in allowlist', {
+          client_ip: (req as Request & { clientIp?: string }).clientIp,
+        });
+      }
+      res
+        .status(400)
+        .type('text/plain')
+        .send(
+          redirectCheck.reason === 'missing'
+            ? 'invalid_request: redirect_uri is required'
+            : 'invalid_request: redirect_uri is not in the registered-clients allowlist'
+        );
+      return;
+    }
+
+    const clientCodeChallenge = url.searchParams.get('code_challenge');
+    const clientCodeChallengeMethod = url.searchParams.get('code_challenge_method');
+    const state = url.searchParams.get('state');
+
+    if (clientCodeChallengeMethod && clientCodeChallengeMethod !== 'S256') {
+      logger.warn('Rejected /authorize: PKCE method not S256', {
+        method: clientCodeChallengeMethod,
+        client_ip: (req as Request & { clientIp?: string }).clientIp,
+      });
+      res
+        .status(400)
+        .type('text/plain')
+        .send('invalid_request: code_challenge_method must be S256');
+      return;
+    }
+
+    if (state && state.length > maxStateLength) {
+      logger.warn('Rejected /authorize: state too long', {
+        length: state.length,
+        client_ip: (req as Request & { clientIp?: string }).clientIp,
+      });
+      res
+        .status(400)
+        .type('text/plain')
+        .send('invalid_request: state parameter exceeds maximum length');
+      return;
+    }
+
+    if (!clientCodeChallenge) {
+      logger.warn('Rejected /authorize: missing code_challenge (PKCE mandatory)', {
+        client_ip: (req as Request & { clientIp?: string }).clientIp,
+      });
+      res
+        .status(400)
+        .type('text/plain')
+        .send('invalid_request: code_challenge is required (PKCE mandatory)');
+      return;
+    }
+
+    const allowedParams = [
+      'response_type',
+      'redirect_uri',
+      'state',
+      'response_mode',
+      'prompt',
+      'login_hint',
+      'domain_hint',
+    ];
+    allowedParams.forEach((param) => {
+      const value = url.searchParams.get(param);
+      if (value) {
+        microsoftAuthUrl.searchParams.set(param, value);
+      }
+    });
+
+    const requestedScope = url.searchParams.get('scope') ?? undefined;
+    const scopeResult = computeEffectiveScope(requestedScope, {
+      allowedRedirectUris,
+      registeredScopesString,
+      knownScopes,
+      logger,
+    });
+    if (scopeResult.effective !== null) {
+      microsoftAuthUrl.searchParams.set('scope', scopeResult.effective);
+    } else {
+      logger.warn('Rejected /authorize: empty scope intersection', {
+        requested: requestedScope,
+        client_ip: (req as Request & { clientIp?: string }).clientIp,
+      });
+      res
+        .status(400)
+        .type('text/plain')
+        .send('invalid_scope: no requested scope is in the registered/known allowlist');
+      return;
+    }
+
+    if (clientCodeChallenge && state) {
+      const serverCodeVerifier = generateServerCodeVerifier();
+      const serverCodeChallenge = crypto
+        .createHash('sha256')
+        .update(serverCodeVerifier)
+        .digest('base64url');
+
+      if (pkceStore.size >= maxPkceStoreSize) {
+        const oldestKey = pkceStore.keys().next().value;
+        if (oldestKey !== undefined) {
+          pkceStore.delete(oldestKey);
+          logger.warn('pkceStore at capacity — evicted oldest entry', {
+            size: maxPkceStoreSize,
+          });
+        }
+      }
+
+      pkceStore.set(state, {
+        clientCodeChallenge,
+        clientCodeChallengeMethod: clientCodeChallengeMethod || 'S256',
+        serverCodeVerifier,
+        createdAt: now(),
+      });
+
+      microsoftAuthUrl.searchParams.set('code_challenge', serverCodeChallenge);
+      microsoftAuthUrl.searchParams.set('code_challenge_method', 'S256');
+
+      logger.info('Two-leg PKCE: stored client challenge, generated server challenge', {
+        state: state.substring(0, 8) + '...',
+      });
+    } else if (clientCodeChallenge) {
+      microsoftAuthUrl.searchParams.set('code_challenge', clientCodeChallenge);
+      microsoftAuthUrl.searchParams.set('code_challenge_method', 'S256');
+    }
+
+    microsoftAuthUrl.searchParams.set('client_id', clientId);
+
+    res.redirect(microsoftAuthUrl.toString());
+  };
 }

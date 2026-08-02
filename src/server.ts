@@ -16,13 +16,12 @@ import {
 } from './lib/microsoft-auth.js';
 import type { CommandOptions } from './cli.ts';
 import { getSecrets, type AppSecrets } from './secrets.js';
-import { getCloudEndpoints } from './cloud-config.js';
 import { requestContext, parseTrustedProxiesEnv } from './request-context.js';
 import { allRegisteredRedirectUris, allRegisteredScopes } from './oauth/registered-clients.js';
 import {
-  computeEffectiveScope,
+  createAuthorizeHandler,
   createRegisterHandler,
-  validateAuthorizeRedirectUri,
+  createRejectPostAuthorizeHandler,
 } from './oauth/http-routes.js';
 import { resolveClientIp } from './lib/trust-proxy.js';
 import crypto from 'node:crypto';
@@ -472,143 +471,14 @@ class MicrosoftGraphServer {
         );
       }
 
-      // HARDENED (N4 B2 BLOCKER fix 2026-06-02): refuse POST /authorize
-      // outright. OAuth 2.0 RFC 6749 §3.1 says the authorization endpoint
-      // MUST support GET; POST is optional. We support only GET and reject
-      // POST with 405. Why : the SDK mcpAuthRouter mounted below catches
-      // POST /authorize and (a) doesn't validate client_id against our
-      // registered-clients allowlist, (b) doesn't enforce scope intersection,
-      // (c) doesn't enforce PKCE — all of which our hand-rolled GET handler
-      // does. Without this 405 interceptor, an attacker bypasses ALL our
-      // hardening by sending POST instead of GET.
-      app.post('/authorize', (req, res) => {
-        logger.warn('Rejected POST /authorize (only GET is supported)', {
-          client_ip: (req as Request & { clientIp?: string }).clientIp,
-        });
-        res
-          .status(405)
-          .set('Allow', 'GET')
-          .type('text/plain')
-          .send(
-            'method_not_allowed: /authorize accepts GET only. POST bypasses required PKCE+scope validation.'
-          );
-      });
-
-      // Authorization endpoint - redirects to Microsoft
-      // Implements two-leg PKCE: client↔server and server↔Microsoft are independent
-      app.get('/authorize', async (req, res) => {
-        const url = new URL(req.url!, `${req.protocol}://${req.get('host')}`);
-        const tenantId = this.secrets?.tenantId || 'common';
-        const clientId = this.secrets!.clientId;
-        const cloudEndpoints = getCloudEndpoints(this.secrets!.cloudType);
-        const microsoftAuthUrl = new URL(
-          `${cloudEndpoints.authority}/${tenantId}/oauth2/v2.0/authorize`
-        );
-
-        // HARDENED (ADR-0003 D2, codex B1 + I2): validate redirect_uri via
-        // extracted helper. Errors are LOCAL (no Location header) — anti
-        // open-redirect (codex I2).
-        const redirectCheck = validateAuthorizeRedirectUri(
-          url.searchParams.get('redirect_uri'),
-          allowedRedirectUris
-        );
-        if (!redirectCheck.ok) {
-          if (redirectCheck.reason === 'not_in_allowlist') {
-            logger.warn('Rejected /authorize: redirect_uri not in allowlist', {
-              client_ip: (req as Request & { clientIp?: string }).clientIp,
-            });
-          }
-          res
-            .status(400)
-            .type('text/plain')
-            .send(
-              redirectCheck.reason === 'missing'
-                ? 'invalid_request: redirect_uri is required'
-                : 'invalid_request: redirect_uri is not in the registered-clients allowlist'
-            );
-          return;
-        }
-
-        // Extract client's PKCE parameters (from claude.ai or other MCP client)
-        const clientCodeChallenge = url.searchParams.get('code_challenge');
-        const clientCodeChallengeMethod = url.searchParams.get('code_challenge_method');
-        const state = url.searchParams.get('state');
-
-        // HARDENED (N0 B1 BLOCKER conf 88 2026-05-16): refuse PKCE method=plain.
-        // Discovery advertises `code_challenge_methods_supported: ['S256']` only
-        // — accepting `plain` here would be a silent downgrade defeating
-        // PKCE's protection for public clients (RFC 7636 §4.4 explicitly
-        // discourages plain).
-        if (clientCodeChallengeMethod && clientCodeChallengeMethod !== 'S256') {
-          logger.warn('Rejected /authorize: PKCE method not S256', {
-            method: clientCodeChallengeMethod,
-            client_ip: (req as Request & { clientIp?: string }).clientIp,
-          });
-          res
-            .status(400)
-            .type('text/plain')
-            .send('invalid_request: code_challenge_method must be S256');
-          return;
-        }
-
-        // HARDENED (N0 B2 BLOCKER conf 92 2026-05-16): bound the `state`
-        // string length to prevent attackers padding it to MB to amplify
-        // the pkceStore OOM vector.
-        if (state && state.length > MAX_STATE_LENGTH) {
-          logger.warn('Rejected /authorize: state too long', {
-            length: state.length,
-            client_ip: (req as Request & { clientIp?: string }).clientIp,
-          });
-          res
-            .status(400)
-            .type('text/plain')
-            .send('invalid_request: state parameter exceeds maximum length');
-          return;
-        }
-
-        // HARDENED (N4 B1 BLOCKER fix 2026-06-02): PKCE is MANDATORY for
-        // public clients per RFC 9700 §2.1.1 (OAuth Security Best Current
-        // Practices). Our discovery advertises `code_challenge_methods_
-        // supported: ['S256']` only — accepting a PKCE-less request would
-        // be a silent contract violation, allowing AAD to fall back to
-        // non-PKCE flow if the app registration permits it. Fail closed.
-        if (!clientCodeChallenge) {
-          logger.warn('Rejected /authorize: missing code_challenge (PKCE mandatory)', {
-            client_ip: (req as Request & { clientIp?: string }).clientIp,
-          });
-          res
-            .status(400)
-            .type('text/plain')
-            .send('invalid_request: code_challenge is required (PKCE mandatory)');
-          return;
-        }
-
-        // Forward parameters that Microsoft OAuth 2.0 v2.0 supports,
-        // but NOT code_challenge/code_challenge_method — we generate our own for Microsoft.
-        // NOTE: `scope` is handled separately below (intersection, not forward-as-is).
-        const allowedParams = [
-          'response_type',
-          'redirect_uri',
-          'state',
-          'response_mode',
-          'prompt',
-          'login_hint',
-          'domain_hint',
-        ];
-
-        allowedParams.forEach((param) => {
-          const value = url.searchParams.get(param);
-          if (value) {
-            microsoftAuthUrl.searchParams.set(param, value);
-          }
-        });
-
-        // HARDENED (ADR-0003 D2): scope intersection delegated to the
-        // extracted computeEffectiveScope() helper (src/oauth/http-routes.ts).
-        // Combines requested ∩ registered ∩ KNOWN + META_SCOPES bypass for
-        // OIDC/refresh protocol scopes (N0-B1/I2 fix).
-        const requestedScope = url.searchParams.get('scope') ?? undefined;
-        const scopeResult = computeEffectiveScope(requestedScope, {
+      // HARDENED (ADR-0003 D2, MAINT-TEST-BEHAV 2026-08-02): /authorize
+      // handlers extracted to src/oauth/http-routes.ts. Same security
+      // invariants (N4-B1 PKCE-required, N4-B2 POST-405, N0-B1 S256-only,
+      // N0-B2 bounded state + pkceStore) — see JSDoc on the factories.
+      app.post('/authorize', createRejectPostAuthorizeHandler({ logger }));
+      app.get(
+        '/authorize',
+        createAuthorizeHandler({
           allowedRedirectUris,
           registeredScopesString,
           knownScopes: () =>
@@ -620,80 +490,12 @@ class MicrosoftGraphServer {
               )
             ),
           logger,
-        });
-        if (scopeResult.effective !== null) {
-          microsoftAuthUrl.searchParams.set('scope', scopeResult.effective);
-        } else {
-          logger.warn('Rejected /authorize: empty scope intersection', {
-            requested: requestedScope,
-            client_ip: (req as Request & { clientIp?: string }).clientIp,
-          });
-          res
-            .status(400)
-            .type('text/plain')
-            .send('invalid_scope: no requested scope is in the registered/known allowlist');
-          return;
-        }
-
-        // Two-leg PKCE: if the client sent a code_challenge, store it and generate
-        // a separate PKCE pair for the server↔Microsoft leg
-        if (clientCodeChallenge && state) {
-          const serverCodeVerifier = crypto.randomBytes(32).toString('base64url');
-          const serverCodeChallenge = crypto
-            .createHash('sha256')
-            .update(serverCodeVerifier)
-            .digest('base64url');
-
-          // HARDENED (N0 B2 BLOCKER fix 2026-05-16): bounded LRU semantics
-          // before insertion to prevent OOM via state-flood. JS Map preserves
-          // insertion order, so deleting the first key is equivalent to
-          // evicting the oldest.
-          if (this.pkceStore.size >= MAX_PKCE_STORE_SIZE) {
-            const oldestKey = this.pkceStore.keys().next().value;
-            if (oldestKey !== undefined) {
-              this.pkceStore.delete(oldestKey);
-              logger.warn('pkceStore at capacity — evicted oldest entry', {
-                size: MAX_PKCE_STORE_SIZE,
-              });
-            }
-          }
-
-          this.pkceStore.set(state, {
-            clientCodeChallenge,
-            clientCodeChallengeMethod: clientCodeChallengeMethod || 'S256',
-            serverCodeVerifier,
-            createdAt: Date.now(),
-          });
-
-          // Send our server-generated code_challenge to Microsoft
-          microsoftAuthUrl.searchParams.set('code_challenge', serverCodeChallenge);
-          microsoftAuthUrl.searchParams.set('code_challenge_method', 'S256');
-
-          logger.info('Two-leg PKCE: stored client challenge, generated server challenge', {
-            state: state.substring(0, 8) + '...',
-          });
-        } else if (clientCodeChallenge) {
-          // HARDENED (N0 B1 fix 2026-05-16): no state to key on (Claude Code
-          // stdio path) — forward challenge but FORCE method=S256. Plain
-          // was already rejected at the top of this handler, so the only
-          // way to land here with a non-S256 method is the absence of the
-          // method param entirely, in which case S256 is the correct default.
-          microsoftAuthUrl.searchParams.set('code_challenge', clientCodeChallenge);
-          microsoftAuthUrl.searchParams.set('code_challenge_method', 'S256');
-        }
-
-        // Use our Microsoft app's client_id
-        microsoftAuthUrl.searchParams.set('client_id', clientId);
-
-        // HARDENED (ADR-0003, codex N1-I2 conf 98): the historical fallback
-        // `User.Read Files.Read Mail.Read` is REMOVED. If the scope intersection
-        // above produced an empty set, we already returned 400 invalid_scope.
-        // Files.Read is out of scope for an Outlook-only MCP and must never
-        // leak into the consent request.
-
-        // Redirect to Microsoft's authorization page
-        res.redirect(microsoftAuthUrl.toString());
-      });
+          secrets: this.secrets!,
+          pkceStore: this.pkceStore,
+          maxPkceStoreSize: MAX_PKCE_STORE_SIZE,
+          maxStateLength: MAX_STATE_LENGTH,
+        })
+      );
 
       // Token exchange endpoint
       app.post('/token', async (req, res) => {
