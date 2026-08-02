@@ -1,0 +1,62 @@
+name: Publish (dormant, à activer post OIDC npm setup)
+
+# Dormant : trigger release commenté volontairement.
+# Activation future = décommenter `release:` ci-dessous et le job `publish:` en bas.
+# Aucun re-touching du fichier nécessaire pour l'activation.
+on:
+  workflow_dispatch:
+  # release:
+  #   types: [published]
+
+permissions:
+  contents: write
+  id-token: write  # requis pour npm publish --provenance (OIDC)
+
+jobs:
+  sbom:
+    name: Generate CycloneDX SBOM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies (locked)
+        run: npm ci
+
+      - name: Generate SBOM (CycloneDX JSON)
+        uses: anchore/sbom-action@v0
+        with:
+          format: cyclonedx-json
+          output-file: sbom-${{ github.sha }}.cdx.json
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: sbom-*.cdx.json
+          if-no-files-found: error
+
+      # Une fois activé via `release:`, attacher aussi le SBOM à la release GitHub :
+      # - name: Attach SBOM to release
+      #   if: github.event_name == 'release'
+      #   uses: softprops/action-gh-release@v2
+      #   with:
+      #     files: sbom-*.cdx.json
+
+  # Post OIDC npm setup, décommenter le job publish ci-dessous :
+  # publish:
+  #   name: Publish to npm with provenance
+  #   needs: sbom
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: actions/setup-node@v4
+  #       with:
+  #         node-version: 22
+  #         registry-url: 'https://registry.npmjs.org'
+  #     - run: npm ci
+  #     - run: npm run build
+  #     - run: npm publish --provenance --access public
