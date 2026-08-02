@@ -1,0 +1,39 @@
+name: Security vulnerability (redirect)
+description: DO NOT report security issues here. This template redirects to the private disclosure channel.
+title: "security: DO NOT FILE — see SECURITY.md"
+labels: ["security", "invalid"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        # STOP — do not file a public security issue
+
+        Public GitHub issues are **world-readable and indexed**. Filing a vulnerability here
+        would disclose it before we can fix it and put every downstream user at risk.
+
+        Please use one of the **private** channels described in
+        [`SECURITY.md`](../blob/main/SECURITY.md):
+
+        1. **Preferred** — GitHub Private Vulnerability Reporting:
+           [open a new advisory](../security/advisories/new)
+        2. **Alternative** — email `security@ixtria.ch` (PGP key on request)
+
+        We aim to acknowledge reports within **3 business days** and provide a remediation
+        timeline within **10 business days**.
+
+  - type: checkboxes
+    id: acknowledged
+    attributes:
+      label: Acknowledgement
+      options:
+        - label: I understand this template exists **only** to redirect me to the private channel, and I will NOT paste vulnerability details below.
+          required: true
+
+  - type: textarea
+    id: nothing
+    attributes:
+      label: Leave this empty
+      description: Do not paste vulnerability details here. Close this tab and use the private channel above.
+      placeholder: "(intentionally left blank)"
+    validations:
+      required: false

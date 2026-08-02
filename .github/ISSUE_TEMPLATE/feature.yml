@@ -1,0 +1,83 @@
+name: Feature request
+description: Propose a new capability or an enhancement
+title: "feat: <short summary>"
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement. Before filing, please note the scope guardrails:
+
+        - **In scope**: Outlook Mail + Calendar via MCP, security hardening (egress, audit,
+          injection wrapper, token storage), OAuth AS layer, deployment templates.
+        - **Out of scope v0.x**: OneDrive, Teams, SharePoint, Excel; Bun/Deno runtime;
+          multi-tenant SaaS. See [`CLAUDE.md`](../blob/main/CLAUDE.md) `Hors scope`.
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: What real-world problem does this solve? Who is the user, and what are they trying to do today?
+      placeholder: |
+        As an operator running the server for a small law firm, I want to ...
+        Today I have to ... which is painful because ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Concrete proposal. Include a proposed CLI flag / tool name / config surface if relevant.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What other approaches did you consider, and why did you reject them? "None" is an acceptable answer only if you have genuinely thought about it.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: scope_impact
+    attributes:
+      label: Scope impact
+      description: Does this expand the project's surface (new deps, new Graph endpoints, new permissions)?
+      options:
+        - "No — pure internal refactor / bugfix disguised as feature"
+        - "Yes — adds Graph endpoint(s) already in `endpoints.json`"
+        - "Yes — adds Graph endpoint(s) NOT in `endpoints.json` (needs whitelist review)"
+        - "Yes — adds a runtime dependency"
+        - "Yes — adds a new attack surface (auth, egress, storage)"
+        - "Not sure"
+    validations:
+      required: true
+
+  - type: textarea
+    id: threat_model
+    attributes:
+      label: Threat model / security impact
+      description: If the scope impact above says "adds a new attack surface", describe the STRIDE dimensions affected. Otherwise put "N/A".
+      placeholder: "N/A"
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: Links, prior art, upstream references. Optional.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: hygiene
+    attributes:
+      label: Pre-submission checklist
+      options:
+        - label: I have read the project scope guardrails above and confirm this request is in scope.
+          required: true
+        - label: I have searched existing issues and this is not a duplicate.
+          required: true

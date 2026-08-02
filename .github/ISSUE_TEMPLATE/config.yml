@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability (private disclosure)
+    url: https://github.com/Ixtria/outlook-mcp-hardened/security/advisories/new
+    about: Report vulnerabilities privately via GitHub Security Advisories. Do NOT open a public issue.
+  - name: Security policy — SECURITY.md
+    url: https://github.com/Ixtria/outlook-mcp-hardened/blob/main/SECURITY.md
+    about: Read the full disclosure process, scope, and response times.

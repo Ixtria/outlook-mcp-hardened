@@ -1,0 +1,6 @@
+Contact: mailto:security@ixtria.ch
+Contact: https://github.com/Ixtria/outlook-mcp-hardened/security/advisories/new
+Expires: 2027-08-02T00:00:00.000Z
+Preferred-Languages: fr, en
+Canonical: https://outlook-mcp.ixtria.xyz/.well-known/security.txt
+Policy: https://github.com/Ixtria/outlook-mcp-hardened/blob/main/SECURITY.md

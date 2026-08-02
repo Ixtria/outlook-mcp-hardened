@@ -1,0 +1,98 @@
+name: Bug report
+description: Report an unexpected behavior in @ixtria/outlook-mcp-hardened
+title: "bug: <short summary>"
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report.
+
+        > If you believe you've found a **security vulnerability**, do NOT open a public issue.
+        > Follow the responsible disclosure process in [`SECURITY.md`](../blob/main/SECURITY.md).
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `npx @ixtria/outlook-mcp-hardened --version` (or commit SHA if built from source).
+      placeholder: "v0.3.0 (or 9f3d080)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Runtime mode
+      description: How is the server being run?
+      options:
+        - stdio (Claude Desktop / local MCP client)
+        - http-loopback (127.0.0.1)
+        - http-public (behind reverse proxy)
+        - other / not sure
+    validations:
+      required: true
+
+  - type: input
+    id: node
+    attributes:
+      label: Node.js version
+      placeholder: "v20.14.0"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "macOS 14.5 / Ubuntu 24.04 / Windows 11"
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Minimal, deterministic steps. Include CLI flags, MCP tool calls, and any relevant config (without secrets).
+      placeholder: |
+        1. Start server with `npx @ixtria/outlook-mcp-hardened --enable-write`
+        2. Call MCP tool `calendar-list-events` with `{ "start": "2026-08-01" }`
+        3. Observe error in stderr
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happened? Include the error message, stack trace, or audit log line (redact tokens, emails, and any PII).
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: Screenshots, related tickets, upstream link, etc. Optional.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: hygiene
+    attributes:
+      label: Pre-submission checklist
+      options:
+        - label: I confirm this is **not** a security vulnerability (those go via [`SECURITY.md`](../blob/main/SECURITY.md)).
+          required: true
+        - label: I have **redacted all secrets, tokens, emails, and PII** from the report above.
+          required: true
+        - label: I have searched existing issues and this is not a duplicate.
+          required: true
