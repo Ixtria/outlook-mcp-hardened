@@ -1,6 +1,7 @@
 import type { AccountInfo, Configuration } from '@azure/msal-node';
 import { PublicClientApplication } from '@azure/msal-node';
 import logger from './logger.js';
+import { hashAccount } from './security/audit-logger.js';
 import fs, { existsSync, readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import path from 'path';
@@ -309,7 +310,14 @@ class AuthManager {
       if (selectedAccountData) {
         const parsed = JSON.parse(selectedAccountData);
         this.selectedAccountId = parsed.accountId;
-        logger.info(`Loaded selected account: ${this.selectedAccountId}`);
+        // HARDENED (SEC-01-P0 fix, 2026-08-02) : hash MSAL homeAccountId
+        // before log emission. Format is `<objectId>.<tenantId>` = two UUIDs
+        // that identify a specific Azure AD user + tenant — PII that
+        // contourne the salted-HMAC pseudonymity of audit-logger. See
+        // CodeQL alert #js/clear-text-logging on this line.
+        logger.info(
+          `Loaded selected account: ${hashAccount(this.selectedAccountId ?? '')}`
+        );
       }
     } catch (error) {
       logger.error(`Error loading selected account: ${(error as Error).message}`);
@@ -422,8 +430,10 @@ class AuthManager {
       if (selectedAccount) {
         return selectedAccount;
       }
+      // HARDENED (SEC-01-P0 fix, 2026-08-02) : same as line ~312, hash
+      // homeAccountId before log. See CodeQL #js/clear-text-logging.
       logger.warn(
-        `Selected account ${this.selectedAccountId} not found, falling back to first account`
+        `Selected account ${hashAccount(this.selectedAccountId ?? '')} not found, falling back to first account`
       );
     }
 

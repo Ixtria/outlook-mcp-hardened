@@ -180,7 +180,19 @@ class GraphClient {
     const startedAt = Date.now();
     let status = 0;
     try {
-      logger.info(`Calling ${endpoint} with options: ${JSON.stringify(options)}`);
+      // HARDENED (SEC-01-P0 fix, 2026-08-02) : never log the raw `options`
+      // object — it carries `accessToken` and `refreshToken` fields when
+      // the request comes through the HTTP transport (see GraphRequestOptions
+      // at the top of this file). Azure refresh tokens are opaque strings
+      // (`M.C_...`, `1.A...`) that DO NOT match the JWT/Bearer patterns
+      // in `src/security/log-redactor.ts`, so the redactor cannot save us
+      // downstream — we strip the credentials here at the source.
+      // Confirmed leak vector by CodeQL alert #js/clear-text-logging on this
+      // exact line + cross-review contradictoire GPT-5.5 (2026-08-02).
+      const { accessToken: _at, refreshToken: _rt, ...safeOptions } = options;
+      void _at;
+      void _rt;
+      logger.info(`Calling ${endpoint} with options: ${JSON.stringify(safeOptions)}`);
 
       // Use new OAuth-aware request method
       const result = await this.makeRequest(endpoint, options);
