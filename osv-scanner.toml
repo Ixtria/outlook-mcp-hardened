@@ -1,0 +1,19 @@
+# osv-scanner v2 configuration
+# Docs : https://google.github.io/osv-scanner/configuration/
+#
+# osv-scanner v2 n'a pas de --fail-on-severity : il exit non-zero à la
+# moindre vuln trouvée, quelle que soit la sévérité. Pour aligner avec
+# `npm audit --audit-level=moderate` (cf. CLAUDE.md), on liste ici les
+# LOW severity vulns qu'on tolère explicitement, avec expiration.
+#
+# Chaque entrée DOIT :
+#   - référencer un GHSA-* réel (vérifiable en 30s sur github.com/advisories/GHSA-...)
+#   - être limitée dans le temps (`ignoreUntil`) — pas de mute permanent
+#   - avoir une reason claire dans `reason` (dev-only, windows-only, out-of-context, etc.)
+#
+# Revoir chaque `ignoreUntil` au weekly maintenance ritual (ADR-0004 Règle 4).
+
+[[IgnoredVulns]]
+id = "GHSA-g7r4-m6w7-qqqr"
+ignoreUntil = 2026-12-31
+reason = "esbuild : arbitrary file read in dev server, Windows-only. Nous ne shipons pas esbuild en runtime (devDep transitive via tsup + vitest). Faux positif pour notre threat model. Revoir 2026-12-31."
