@@ -8,55 +8,87 @@ on:
   # release:
   #   types: [published]
 
+# Top-level = least-privilege. Chaque job élève ses permissions si besoin.
+# Fix background security review 2026-08-02 : contents:write + id-token:write
+# au top-level était over-broad (le job sbom n'a besoin d'aucun des deux).
 permissions:
-  contents: write
-  id-token: write  # requis pour npm publish --provenance (OIDC)
+  contents: read
 
 jobs:
   sbom:
     name: Generate CycloneDX SBOM
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
 
-      - uses: actions/setup-node@v4
+      # HARDENED: persist-credentials:false évite que le GITHUB_TOKEN soit
+      # stocké dans .git/config, où un postinstall script d'une dep compromise
+      # pourrait le récupérer pour push. Combiné avec --ignore-scripts,
+      # supprime la surface supply-chain / lifecycle-script code-execution.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
 
-      - name: Install dependencies (locked)
-        run: npm ci
+      # HARDENED: --ignore-scripts sur npm ci : le SBOM se génère à partir de
+      # package-lock.json seul, aucun build/postinstall requis. Neutralise
+      # l'exécution de scripts lifecycle non contrôlés (pattern typique de
+      # supply-chain attack).
+      - name: Install dependencies (locked, no lifecycle scripts)
+        run: npm ci --ignore-scripts
 
       - name: Generate SBOM (CycloneDX JSON)
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@d8a2c0130026bf585de5c176ab8f7ce62d75bf04 # v0.20.7
         with:
           format: cyclonedx-json
           output-file: sbom-${{ github.sha }}.cdx.json
 
       - name: Upload SBOM artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: sbom-cyclonedx
           path: sbom-*.cdx.json
           if-no-files-found: error
 
-      # Une fois activé via `release:`, attacher aussi le SBOM à la release GitHub :
+      # Une fois activé via `release:`, attacher aussi le SBOM à la release GitHub.
+      # Nécessite d'élever `contents: write` sur CE job uniquement à ce moment-là.
       # - name: Attach SBOM to release
       #   if: github.event_name == 'release'
-      #   uses: softprops/action-gh-release@v2
+      #   uses: softprops/action-gh-release@<SHA> # pin required
       #   with:
       #     files: sbom-*.cdx.json
 
-  # Post OIDC npm setup, décommenter le job publish ci-dessous :
+  # Post OIDC npm setup, décommenter le job publish ci-dessous.
+  # Points critiques à respecter à ce moment-là :
+  #   - permissions minimales par job (id-token: write pour --provenance, rien d'autre)
+  #   - persist-credentials: false sur checkout (le token GH n'est pas requis pour publish npm)
+  #   - garde --ignore-scripts sur npm ci ; laisser scripts seulement sur npm run build si strictement nécessaire
+  #   - harden-runner en tête de job (mode audit d'abord)
   # publish:
   #   name: Publish to npm with provenance
   #   needs: sbom
   #   runs-on: ubuntu-latest
+  #   permissions:
+  #     id-token: write   # OIDC pour npm publish --provenance
+  #     contents: read
   #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: actions/setup-node@v4
+  #     - uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+  #       with:
+  #         egress-policy: audit
+  #     - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+  #       with:
+  #         persist-credentials: false
+  #     - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
   #       with:
   #         node-version: 22
   #         registry-url: 'https://registry.npmjs.org'
-  #     - run: npm ci
+  #     - run: npm ci --ignore-scripts
   #     - run: npm run build
   #     - run: npm publish --provenance --access public
