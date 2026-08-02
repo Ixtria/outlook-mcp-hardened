@@ -6,6 +6,8 @@ import AuthManager from './auth.js';
 import type { AppSecrets } from './secrets.js';
 import { getCloudEndpoints, type CloudType } from './cloud-config.js';
 import { allRegisteredRedirectUris } from './oauth/registered-clients.js';
+import { auditLog } from './security/audit-logger.js';
+import { EgressViolationError } from './security/egress-guard.js';
 
 /**
  * Standalone Microsoft access-token verifier.
@@ -42,13 +44,57 @@ export async function verifyMicrosoftAccessToken(
   authManager: AuthManager
 ): Promise<AuthInfo> {
   const cloudEndpoints = getCloudEndpoints(cloudType);
-  const response = await fetch(`${cloudEndpoints.graphApi}/v1.0/me`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
-  });
+  // OBS-02 (2026-08-02) : wall time so the audit stream carries a latency
+  // signal per Bearer verification. Alerting on p95(duration_ms) surfaces a
+  // laggy Graph tenant before users complain.
+  const started = Date.now();
+  let response: Response;
+  try {
+    response = await fetch(`${cloudEndpoints.graphApi}/v1.0/me`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+  } catch (err) {
+    // OBS-02 : the fetch itself failed (DNS, network, or the egress guard
+    // synchronously threw EgressViolationError). Emit a dedicated
+    // `oauth.egress.violation` line when the cause is a guard rejection so
+    // operators can page on it distinctly from garden-variety network flakes.
+    if (err instanceof EgressViolationError) {
+      auditLog({
+        tool: 'oauth.egress.violation',
+        method: 'GET',
+        path: err.url || `${cloudEndpoints.graphApi}/v1.0/me`,
+        scopes: [],
+        account: null,
+        status: 0,
+        duration_ms: Date.now() - started,
+      });
+    }
+    auditLog({
+      tool: 'oauth.mcp.reject',
+      method: 'GET',
+      path: '/mcp',
+      scopes: [],
+      account: null,
+      status: 0,
+      duration_ms: Date.now() - started,
+    });
+    throw err;
+  }
 
   if (!response.ok) {
+    // OBS-02 : Graph rejected the token (401/403/…). This is the hot
+    // credential-stuffing signal — pair with rate limiting.
+    auditLog({
+      tool: 'oauth.mcp.reject',
+      method: 'GET',
+      path: '/mcp',
+      scopes: [],
+      account: null,
+      status: response.status,
+      duration_ms: Date.now() - started,
+    });
     throw new Error(`Token verification failed: ${response.status}`);
   }
 
@@ -74,12 +120,109 @@ export async function verifyMicrosoftAccessToken(
   // "trusted reverse proxy" wording in CLAUDE.md — fail closed here.
   void authManager; // keep param to preserve fn signature for callers
 
+  // OBS-02 : successful verify. `account` carries the raw UPN — auditLog()
+  // will HMAC-hash it via hashAccount() before writing to stderr, so no PII
+  // hits the log file. `scopes=[]` reflects the ADR-0003 Niveau B stance
+  // that we do not decode the JWT to extract scopes locally.
+  auditLog({
+    tool: 'oauth.mcp.request',
+    method: 'GET',
+    path: '/mcp',
+    scopes: [],
+    account:
+      typeof userData.userPrincipalName === 'string' && userData.userPrincipalName
+        ? userData.userPrincipalName
+        : null,
+    status: 200,
+    duration_ms: Date.now() - started,
+  });
+
   // HARDENED (N3 mcp-vault M2): `aud` is intentionally NOT validated locally
   // per ADR-0003 (Niveau B proxy pattern). AAD tokens target Graph by design.
   return {
     token,
     clientId,
     scopes: [],
+  };
+}
+
+/**
+ * OBS-02 (2026-08-02) : audit wrapper for the AAD token-exchange functions
+ * (`exchangeCodeForToken`, `refreshAccessToken`). Preserves the exact call
+ * signature of the wrapped function so it can be dropped into
+ * `HardenedOAuthAppDeps.exchangeCode` / `.refreshToken` in `server.ts`
+ * without touching `src/oauth/http-app.ts`.
+ *
+ * Contract :
+ *   - On success : emit `oauth.token.request` with status=200 and the AAD-
+ *     returned `scope` string decomposed into an array (empty if absent).
+ *   - On EgressViolationError : emit `oauth.egress.violation` + a
+ *     `oauth.token.reject` line with status=502.
+ *   - On any other thrown error : emit `oauth.token.reject` with status=500.
+ *   - The original error is re-thrown untouched so the /token handler's
+ *     error path (server_error envelope) still runs.
+ *
+ * Sensitive fields (`code`, `code_verifier`, `refresh_token`, `access_token`,
+ * `client_secret`) are NEVER read here — auditLog() only sees the numeric
+ * status / duration / scope string.
+ */
+type TokenResponseLike = { scope?: unknown };
+
+export function withTokenExchangeAudit<
+  Args extends unknown[],
+  R extends TokenResponseLike,
+>(fn: (...args: Args) => Promise<R>): (...args: Args) => Promise<R> {
+  return async (...args: Args): Promise<R> => {
+    const started = Date.now();
+    try {
+      const result = await fn(...args);
+      const scopes =
+        typeof result?.scope === 'string'
+          ? result.scope.split(/\s+/).filter((s) => s.length > 0)
+          : [];
+      auditLog({
+        tool: 'oauth.token.request',
+        method: 'POST',
+        path: '/token',
+        scopes,
+        account: null,
+        status: 200,
+        duration_ms: Date.now() - started,
+      });
+      return result;
+    } catch (err) {
+      if (err instanceof EgressViolationError) {
+        auditLog({
+          tool: 'oauth.egress.violation',
+          method: 'POST',
+          path: err.url || '/token',
+          scopes: [],
+          account: null,
+          status: 0,
+          duration_ms: Date.now() - started,
+        });
+        auditLog({
+          tool: 'oauth.token.reject',
+          method: 'POST',
+          path: '/token',
+          scopes: [],
+          account: null,
+          status: 502,
+          duration_ms: Date.now() - started,
+        });
+      } else {
+        auditLog({
+          tool: 'oauth.token.reject',
+          method: 'POST',
+          path: '/token',
+          scopes: [],
+          account: null,
+          status: 500,
+          duration_ms: Date.now() - started,
+        });
+      }
+      throw err;
+    }
   };
 }
 

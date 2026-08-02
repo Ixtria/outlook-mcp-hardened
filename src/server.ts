@@ -1,59 +1,16 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { mcpAuthRouter } from '@modelcontextprotocol/sdk/server/auth/router.js';
-import express, { Request, Response, NextFunction } from 'express';
 import logger, { enableConsoleLogging } from './logger.js';
 import { registerAuthTools } from './auth-tools.js';
 import { registerGraphTools, registerDiscoveryTools } from './graph-tools.js';
 import GraphClient from './graph-client.js';
-import AuthManager, { buildScopesFromEndpoints } from './auth.js';
-import { MicrosoftOAuthProvider, verifyMicrosoftAccessToken } from './oauth-provider.js';
-import {
-  createBearerAuthMiddleware,
-  exchangeCodeForToken,
-  refreshAccessToken,
-} from './lib/microsoft-auth.js';
+import AuthManager from './auth.js';
 import type { CommandOptions } from './cli.ts';
 import { getSecrets, type AppSecrets } from './secrets.js';
-import { requestContext, parseTrustedProxiesEnv } from './request-context.js';
-import { allRegisteredRedirectUris, allRegisteredScopes } from './oauth/registered-clients.js';
-import {
-  createAuthorizeHandler,
-  createRegisterHandler,
-  createRejectPostAuthorizeHandler,
-} from './oauth/http-routes.js';
-import { resolveClientIp } from './lib/trust-proxy.js';
-import crypto from 'node:crypto';
-
-/**
- * Maximum PKCE store size (N0 B2 BLOCKER fix 2026-05-16). The store is keyed
- * by attacker-controlled `state`, so we cap the Map to prevent unbounded
- * memory growth from flood attacks. When full, the oldest entry is evicted.
- * 10_000 × ~250 bytes ≈ 2.5 MB upper bound on store memory.
- */
-const MAX_PKCE_STORE_SIZE = 10_000;
-
-/**
- * Maximum `state` parameter length (N0 B2 BLOCKER fix 2026-05-16). Bounds the
- * attacker's ability to pad state with megabytes of data. 256 chars is well
- * above any legitimate use (typical OAuth state is 32-64 bytes of entropy).
- */
-const MAX_STATE_LENGTH = 256;
-
-/**
- * Periodic pkceStore sweep interval (N0 B2 BLOCKER fix). The original
- * eviction-on-insert pattern leaked entries if /authorize traffic stopped
- * after a flood. This interval-driven sweep runs every minute regardless
- * of request volume.
- */
-const PKCE_SWEEP_INTERVAL_MS = 60_000;
-
-/**
- * pkceStore entry TTL (10 minutes). OAuth authorization codes are exchanged
- * within seconds in practice; 10 min is generous slack for slow consent UX.
- */
-const PKCE_ENTRY_TTL_MS = 10 * 60 * 1000;
+import { createRequestIdMiddleware, parseTrustedProxiesEnv } from './request-context.js';
+import { createHardenedOAuthApp } from './oauth/http-app.js';
+import { withTokenExchangeAudit } from './oauth-provider.js';
+import { exchangeCodeForToken, refreshAccessToken } from './lib/microsoft-auth.js';
 
 /**
  * Parse HTTP option into host and port components.
@@ -93,17 +50,6 @@ class MicrosoftGraphServer {
   private version: string = '0.0.0';
   private multiAccount: boolean = false;
   private accountNames: string[] = [];
-
-  // Two-leg PKCE: stores client's code_challenge and server's code_verifier, keyed by OAuth state
-  private pkceStore: Map<
-    string,
-    {
-      clientCodeChallenge: string;
-      clientCodeChallengeMethod: string;
-      serverCodeVerifier: string;
-      createdAt: number;
-    }
-  > = new Map();
 
   constructor(authManager: AuthManager, options: CommandOptions = {}) {
     this.authManager = authManager;
@@ -218,12 +164,11 @@ class MicrosoftGraphServer {
       // 3. `OUTLOOK_MCP_CORS_ORIGIN=*` is a footgun (N0 I6) — refuse boot
       //    unless `OUTLOOK_MCP_CORS_ALLOW_WILDCARD=true` is also set, an
       //    explicit opt-in that survives operator review.
-      const hasTrustedProxies =
-        parseTrustedProxiesEnv(process.env.OUTLOOK_MCP_TRUSTED_PROXIES).size > 0;
+      const trustedProxies = parseTrustedProxiesEnv(process.env.OUTLOOK_MCP_TRUSTED_PROXIES);
       const publicUrl = process.env.OUTLOOK_MCP_PUBLIC_URL ?? this.options.baseUrl;
       const isLoopbackBind = host === '127.0.0.1' || host === '::1' || host === 'localhost';
 
-      if (!isLoopbackBind && !hasTrustedProxies) {
+      if (!isLoopbackBind && trustedProxies.size === 0) {
         const msg =
           `Refusing to start HTTP server bound to "${host}" without ` +
           `OUTLOOK_MCP_TRUSTED_PROXIES. Set the env var to the comma-separated ` +
@@ -264,507 +209,45 @@ class MicrosoftGraphServer {
         throw new Error(msg);
       }
 
-      // HARDENED (N0 B2 BLOCKER fix 2026-05-16): interval-driven pkceStore
-      // sweep. Independent of request volume, so the store cannot accumulate
-      // stale entries after a flood subsides.
-      const pkceSweepHandle = setInterval(() => {
-        const now = Date.now();
-        let evicted = 0;
-        for (const [key, value] of this.pkceStore) {
-          if (now - value.createdAt > PKCE_ENTRY_TTL_MS) {
-            this.pkceStore.delete(key);
-            evicted++;
-          }
-        }
-        if (evicted > 0) {
-          logger.info(`pkceStore: swept ${evicted} expired entries`);
-        }
-      }, PKCE_SWEEP_INTERVAL_MS);
-      pkceSweepHandle.unref(); // do not keep the event loop alive solely for this
-
-      const app = express();
-      // HARDENED (ADR-0003 D6, codex N1-B1 conf 96 + N0-B2 conf 92):
-      // Replace permissive `trust proxy=true` (which trusts XFF from any peer)
-      // with an explicit operator-managed IP allowlist. Express semantics:
-      //   - `false` → ignore ALL X-Forwarded-* (used when no proxy is configured)
-      //   - `string[] of IPs` → trust those IPs only; preserves `req.secure`
-      //     correctly via X-Forwarded-Proto, which the discovery endpoints
-      //     need to emit `https://` issuers behind a TLS-terminating proxy
-      //     (N0-B2 RFC 8414 §2 / RFC 9728 §3.1).
-      const trustedProxies = parseTrustedProxiesEnv(process.env.OUTLOOK_MCP_TRUSTED_PROXIES);
-      if (trustedProxies.size > 0) {
-        app.set('trust proxy', [...trustedProxies]);
-      } else {
-        app.set('trust proxy', false);
-      }
-      app.use((req, _res, next) => {
-        const socketIp = req.socket.remoteAddress ?? '';
-        const xff = req.headers['x-forwarded-for'];
-        // Express collapses duplicate headers; in practice this is a string.
-        const xffString = Array.isArray(xff) ? xff.join(', ') : xff;
-        const clientIp = resolveClientIp(socketIp, xffString, trustedProxies);
-        (req as Request & { clientIp?: string }).clientIp = clientIp;
-        next();
-      });
-      // HARDENED (N0 B3 BLOCKER fix 2026-05-16): explicit body size + parser
-      // safety. OAuth requests are tiny (a few KB at most). `extended: false`
-      // uses Node's safer `querystring` parser (no qs prototype-pollution
-      // surface). `parameterLimit: 20` is well above any legitimate use.
-      app.use(express.json({ limit: '10kb' }));
-      app.use(express.urlencoded({ extended: false, limit: '10kb', parameterLimit: 20 }));
-
-      // HARDENED (N0 I5 + I6 fix 2026-05-16):
-      //
-      // CORS posture : DEFAULT-DENY. MCP clients (Claude Desktop, Claude Code,
-      // mcp-inspector) are NOT browsers — they don't apply SOP and don't need
-      // CORS approval. Allowing CORS to a Bearer-protected resource only
-      // helps browser-context attackers chain "exfiltrated Bearer token →
-      // cross-origin call to /mcp" (codex-style threat model, see N0 I5).
-      //
-      // I5 fix : the previous port-agnostic localhost allowlist matched
-      // `http://localhost:1337` against `http://localhost` — any local app
-      // (malicious Electron, browser extension) on any port reflected as
-      // valid origin. Now we either deny entirely (default) or accept ONLY
-      // the exact origin string the operator listed.
-      //
-      // I6 fix : '*' is now refused at boot (above) unless the operator
-      // explicitly opts in via OUTLOOK_MCP_CORS_ALLOW_WILDCARD=true.
-      const configuredOrigin = process.env.OUTLOOK_MCP_CORS_ORIGIN;
-
-      app.use((req, res, next) => {
-        const requestOrigin = req.headers.origin;
-        let allowOrigin: string | null = null;
-
-        if (configuredOrigin === '*') {
-          // Wildcard explicitly approved via OUTLOOK_MCP_CORS_ALLOW_WILDCARD=true
-          // (else boot refused above). In wildcard mode the browser refuses
-          // to send Authorization anyway, so Allow-Headers MUST exclude it.
-          allowOrigin = '*';
-        } else if (configuredOrigin && requestOrigin === configuredOrigin) {
-          // Exact-origin match. Includes port + path-less host (origin is
-          // always scheme://host:port per RFC 6454).
-          allowOrigin = requestOrigin;
-        }
-        // No fallback to "localhost any port" — that was N0 I5.
-
-        if (allowOrigin) {
-          res.header('Access-Control-Allow-Origin', allowOrigin);
-          if (allowOrigin !== '*') {
-            res.header('Vary', 'Origin');
-          }
-        }
-        res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-        // Allow-Headers : Authorization included EXCEPT in wildcard mode
-        // (the browser would refuse to send it with '*' anyway, but some
-        // non-browser clients honor '*' — we make the contract explicit).
-        const allowHeaders =
-          allowOrigin === '*'
-            ? 'Origin, X-Requested-With, Content-Type, Accept, mcp-protocol-version'
-            : 'Origin, X-Requested-With, Content-Type, Accept, Authorization, mcp-protocol-version';
-        res.header('Access-Control-Allow-Headers', allowHeaders);
-
-        if (req.method === 'OPTIONS') {
-          res.sendStatus(allowOrigin ? 200 : 403);
-          return;
-        }
-
-        next();
-      });
-
-      // HARDENED (ADR-0003): writePolicy resolved here for /authorize scope
-      // intersection. Same shape as the createMcpServer() local — kept in sync
-      // because the HTTP handler needs it without coupling to createMcpServer's
-      // scope.
-      const httpWritePolicy = {
-        mail: !!this.options.enableSend,
-        calendar: !!this.options.enableWrite,
-      };
-
-      // HARDENED (N0-I3 conf 82): hoist once. Static registry → safe to cache
-      // for the lifetime of the HTTP server. Avoids per-request Set rebuild
-      // and ensures /register and /authorize see the exact same view.
-      const allowedRedirectUris = allRegisteredRedirectUris();
-      const registeredScopesString = [...allRegisteredScopes()].join(' ');
-
-      const oauthProvider = new MicrosoftOAuthProvider(this.authManager, this.secrets!);
-
-      // HARDENED (N0 I2 fix 2026-05-16): /mcp Bearer middleware now VALIDATES
-      // the token via the same verifier as the SDK provider (Graph /me round-
-      // trip). Before this fix, the middleware was pass-through — any string
-      // after "Bearer " reached the MCP route handlers, exposing tools/list
-      // and other MCP utility methods to unauthenticated enumeration.
-      const secrets = this.secrets!;
-      const authManager = this.authManager;
-      const bearerAuthMiddleware = createBearerAuthMiddleware(async (token) => {
-        await verifyMicrosoftAccessToken(token, secrets.cloudType, secrets.clientId, authManager);
-      });
-
-      // HARDENED (N4-I1 fix 2026-06-02): build a fixed issuer URL once at
-      // boot. NEVER reflect req.get('host') — that's attacker-controlled
-      // and a DNS-rebinding vector even on loopback. If PUBLIC_URL is set
-      // we use it; otherwise we hardcode `http://<bound-host>:<port>` from
-      // the actual listen socket config (host + port are known here).
-      const issuerUrl = publicUrl
-        ? new URL(publicUrl)
-        : new URL(`http://${host ?? '127.0.0.1'}:${port}`);
-
-      // OAuth Authorization Server Discovery
-      app.get('/.well-known/oauth-authorization-server', async (_req, res) => {
-        // HARDENED (N0 I3 + N4-I1 fix 2026-06-02): fixed issuer URL only,
-        // never reflected. Cache-Control: no-store prevents CDN caching.
-        const url = issuerUrl;
-        res.set('Cache-Control', 'no-store');
-
-        const scopes = buildScopesFromEndpoints(this.options.orgMode, this.options.enabledTools);
-
-        const metadata: Record<string, unknown> = {
-          issuer: url.origin,
-          authorization_endpoint: `${url.origin}/authorize`,
-          token_endpoint: `${url.origin}/token`,
-          response_types_supported: ['code'],
-          response_modes_supported: ['query'],
-          grant_types_supported: ['authorization_code', 'refresh_token'],
-          token_endpoint_auth_methods_supported: ['none'],
-          code_challenge_methods_supported: ['S256'],
-          scopes_supported: scopes,
-        };
-
-        if (this.options.enableDynamicRegistration) {
-          metadata.registration_endpoint = `${url.origin}/register`;
-        }
-
-        res.json(metadata);
-      });
-
-      // OAuth Protected Resource Discovery
-      // HARDENED (N4-I3 fix 2026-06-02): serve at BOTH the root path AND
-      // the resource-suffix path `/oauth-protected-resource/mcp`. RFC 9728
-      // §3.1 + MCP Authorization spec (draft 2025-11) require the suffix
-      // variant; some MCP clients fetch it first and don't fall back.
-      app.get(
-        [
-          '/.well-known/oauth-protected-resource',
-          '/.well-known/oauth-protected-resource/mcp',
-        ],
-        async (_req, res) => {
-          // HARDENED (N0 I3 + N4-I1 fix 2026-06-02): fixed issuer URL only.
-          const url = issuerUrl;
-          res.set('Cache-Control', 'no-store');
-          const scopes = buildScopesFromEndpoints(this.options.orgMode, this.options.enabledTools);
-          res.json({
-            resource: `${url.origin}/mcp`,
-            authorization_servers: [url.origin],
-            scopes_supported: scopes,
-            bearer_methods_supported: ['header'],
-            resource_documentation: `${url.origin}`,
-          });
-        }
-      );
-
-      if (this.options.enableDynamicRegistration) {
-        // HARDENED (ADR-0003 D2, codex N1-B2 conf 94): /register handler
-        // extracted into src/oauth/http-routes.ts for unit-testable wiring
-        // (N0-O3 cross-review). Allowlist + logger injected as deps.
-        app.post(
-          '/register',
-          createRegisterHandler({ allowedRedirectUris, logger })
-        );
-      }
-
-      // HARDENED (ADR-0003 D2, MAINT-TEST-BEHAV 2026-08-02): /authorize
-      // handlers extracted to src/oauth/http-routes.ts. Same security
-      // invariants (N4-B1 PKCE-required, N4-B2 POST-405, N0-B1 S256-only,
-      // N0-B2 bounded state + pkceStore) — see JSDoc on the factories.
-      app.post('/authorize', createRejectPostAuthorizeHandler({ logger }));
-      app.get(
-        '/authorize',
-        createAuthorizeHandler({
-          allowedRedirectUris,
-          registeredScopesString,
-          knownScopes: () =>
-            new Set(
-              buildScopesFromEndpoints(
-                this.options.orgMode,
-                this.options.enabledTools,
-                httpWritePolicy
-              )
-            ),
-          logger,
-          secrets: this.secrets!,
-          pkceStore: this.pkceStore,
-          maxPkceStoreSize: MAX_PKCE_STORE_SIZE,
-          maxStateLength: MAX_STATE_LENGTH,
-        })
-      );
-
-      // Token exchange endpoint
-      app.post('/token', async (req, res) => {
-        try {
-          // Log token endpoint call (redact sensitive data)
-          logger.info('Token endpoint called', {
-            method: req.method,
-            url: req.url,
-            contentType: req.get('Content-Type'),
-            grant_type: req.body?.grant_type,
-          });
-
-          const body = req.body;
-
-          // Add debugging and validation
-          if (!body) {
-            logger.error('Token endpoint: Request body is undefined');
-            res.status(400).json({
-              error: 'invalid_request',
-              error_description: 'Request body is required',
-            });
-            return;
-          }
-
-          if (!body.grant_type) {
-            logger.error('Token endpoint: grant_type is missing', { body });
-            res.status(400).json({
-              error: 'invalid_request',
-              error_description: 'grant_type parameter is required',
-            });
-            return;
-          }
-
-          if (body.grant_type === 'authorization_code') {
-            const tenantId = this.secrets?.tenantId || 'common';
-            const clientId = this.secrets!.clientId;
-            const clientSecret = this.secrets?.clientSecret;
-
-            logger.info('Token endpoint: authorization_code exchange', {
-              redirect_uri: body.redirect_uri,
-              has_code: !!body.code,
-              has_code_verifier: !!body.code_verifier,
-              clientId,
-              tenantId,
-              hasClientSecret: !!clientSecret,
-            });
-
-            // Two-leg PKCE: check if we have a stored PKCE mapping for this exchange
-            // We need to find the matching state — it's not sent in the token request,
-            // but the code is unique per authorization, so we verify the client's
-            // code_verifier against all stored challenges and use the server's verifier
-            let serverCodeVerifier: string | undefined;
-
-            if (body.code_verifier) {
-              // Look through pkceStore for a matching client code_challenge
-              const clientVerifier = body.code_verifier as string;
-              const clientChallengeComputed = crypto
-                .createHash('sha256')
-                .update(clientVerifier)
-                .digest('base64url');
-
-              for (const [state, pkceData] of this.pkceStore) {
-                if (pkceData.clientCodeChallenge === clientChallengeComputed) {
-                  // Client's code_verifier matches stored code_challenge — two-leg PKCE
-                  serverCodeVerifier = pkceData.serverCodeVerifier;
-                  this.pkceStore.delete(state);
-                  logger.info('Two-leg PKCE: matched client verifier, using server verifier', {
-                    state: state.substring(0, 8) + '...',
-                  });
-                  break;
-                }
-              }
-            }
-
-            const result = await exchangeCodeForToken(
-              body.code as string,
-              body.redirect_uri as string,
-              clientId,
-              clientSecret,
-              tenantId,
-              serverCodeVerifier || (body.code_verifier as string | undefined),
-              this.secrets!.cloudType
-            );
-            res.json(result);
-          } else if (body.grant_type === 'refresh_token') {
-            const tenantId = this.secrets?.tenantId || 'common';
-            const clientId = this.secrets!.clientId;
-            const clientSecret = this.secrets?.clientSecret;
-
-            // Log whether using public or confidential client
-            if (clientSecret) {
-              logger.info('Refresh endpoint: Using confidential client with client_secret');
-            } else {
-              logger.info('Refresh endpoint: Using public client without client_secret');
-            }
-
-            const result = await refreshAccessToken(
-              body.refresh_token as string,
-              clientId,
-              clientSecret,
-              tenantId,
-              this.secrets!.cloudType
-            );
-            res.json(result);
-          } else {
-            res.status(400).json({
-              error: 'unsupported_grant_type',
-              error_description: `Grant type '${body.grant_type}' is not supported`,
-            });
-          }
-        } catch (error) {
-          logger.error('Token endpoint error:', error);
-          res.status(500).json({
-            error: 'server_error',
-            error_description: 'Internal server error during token exchange',
-          });
-        }
-      });
-
-      // HARDENED (N3 mcp-vault M1 2026-05-16): the SDK's `mcpAuthRouter`
-      // registers its own /.well-known, /register, /authorize, /token handlers.
-      // Our hand-rolled hardenings (registered above) are matched FIRST by
-      // Express because they were registered earlier. mcpAuthRouter only ever
-      // sees a request if our handlers did not respond — practically: edge
-      // SDK-specific paths (e.g. dynamic /.well-known variants we don't cover).
-      //
-      // For ANY path mcpAuthRouter handles, the provider's getClient() is
-      // consulted to validate redirect_uri. That's why oauth-provider.ts
-      // getClient() must return the registered-clients allowlist (N3 C1 fix)
-      // — it's the defense-in-depth filet de sécurité.
-      app.use(
-        mcpAuthRouter({
-          provider: oauthProvider,
-          issuerUrl: new URL(
-            this.options.baseUrl || process.env.MS365_MCP_BASE_URL || `http://localhost:${port}`
-          ),
-        })
-      );
-
-      // Microsoft Graph MCP endpoints with bearer token auth
-      // Handle both GET and POST methods as required by MCP Streamable HTTP specification
-      app.get(
-        '/mcp',
-        bearerAuthMiddleware,
-        async (
-          req: Request & { microsoftAuth?: { accessToken: string; refreshToken: string } },
-          res: Response
-        ) => {
-          const handler = async () => {
-            const server = this.createMcpServer();
-            const transport = new StreamableHTTPServerTransport({
-              sessionIdGenerator: undefined, // Stateless mode
-            });
-
-            res.on('close', () => {
-              transport.close();
-              server.close();
-            });
-
-            await server.connect(transport);
-            await transport.handleRequest(req as any, res as any, undefined);
-          };
-
-          try {
-            if (req.microsoftAuth) {
-              await requestContext.run(
-                {
-                  accessToken: req.microsoftAuth.accessToken,
-                  refreshToken: req.microsoftAuth.refreshToken,
-                },
-                handler
-              );
-            } else {
-              await handler();
-            }
-          } catch (error) {
-            logger.error('Error handling MCP GET request:', error);
-            if (!res.headersSent) {
-              res.status(500).json({
-                jsonrpc: '2.0',
-                error: {
-                  code: -32603,
-                  message: 'Internal server error',
-                },
-                id: null,
-              });
-            }
-          }
-        }
-      );
-
-      app.post(
-        '/mcp',
-        bearerAuthMiddleware,
-        async (
-          req: Request & { microsoftAuth?: { accessToken: string; refreshToken: string } },
-          res: Response
-        ) => {
-          const handler = async () => {
-            const server = this.createMcpServer();
-            const transport = new StreamableHTTPServerTransport({
-              sessionIdGenerator: undefined, // Stateless mode
-            });
-
-            res.on('close', () => {
-              transport.close();
-              server.close();
-            });
-
-            await server.connect(transport);
-            await transport.handleRequest(req as any, res as any, req.body);
-          };
-
-          try {
-            if (req.microsoftAuth) {
-              await requestContext.run(
-                {
-                  accessToken: req.microsoftAuth.accessToken,
-                  refreshToken: req.microsoftAuth.refreshToken,
-                },
-                handler
-              );
-            } else {
-              await handler();
-            }
-          } catch (error) {
-            logger.error('Error handling MCP POST request:', error);
-            if (!res.headersSent) {
-              res.status(500).json({
-                jsonrpc: '2.0',
-                error: {
-                  code: -32603,
-                  message: 'Internal server error',
-                },
-                id: null,
-              });
-            }
-          }
-        }
-      );
-
-      // Health check endpoint
-      app.get('/', (req, res) => {
-        res.send('Microsoft 365 MCP Server is running');
-      });
-
-      // HARDENED (N4-I2 fix 2026-06-02): global error handler that prevents
-      // Express's default stack-trace HTML response from leaking absolute
-      // filesystem paths, node_modules layout, Express version, and the
-      // operator's username on uncaught errors (PayloadTooLargeError, JSON
-      // parse errors, etc.). MUST be the LAST app.use call so it sees errors
-      // bubbling up from all earlier middleware and routes.
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      app.use((err: Error & { status?: number; statusCode?: number }, req: Request, res: Response, _next: NextFunction) => {
-        const status = err.status ?? err.statusCode ?? 500;
-        logger.warn('Express error caught by global handler', {
-          status,
-          message: err.message,
-          client_ip: (req as Request & { clientIp?: string }).clientIp,
-        });
-        if (!res.headersSent) {
-          res.status(status).json({
-            error: status >= 500 ? 'server_error' : 'request_error',
-            error_description:
-              status >= 500
-                ? 'Internal server error'
-                : err.message?.slice(0, 200) || 'Bad request',
-          });
-        }
+      // HARDENED (TEST-01, MAINT-TEST-BEHAV 2026-08-02): the entire HTTP
+      // wiring — trust proxy, CORS, body parsers, /.well-known/*, /register,
+      // /authorize, /token, /mcp, global error handler, interval-driven
+      // pkceStore sweep — is now built by `createHardenedOAuthApp` in
+      // `src/oauth/http-app.ts`. Tests exercise the exact same factory
+      // (`test/helpers/oauth-server-fixture.ts` + `test/e2e/oauth-routes.test.ts`).
+      // The only server-side responsibilities that remain here are : run the
+      // boot-time env-var invariants above, then `.listen()` the built app.
+      const { app } = createHardenedOAuthApp({
+        secrets: this.secrets!,
+        authManager: this.authManager,
+        createMcpServer: () => this.createMcpServer(),
+        options: {
+          orgMode: this.options.orgMode,
+          enabledTools: this.options.enabledTools,
+          enableSend: this.options.enableSend,
+          enableWrite: this.options.enableWrite,
+          enableDynamicRegistration: this.options.enableDynamicRegistration,
+          baseUrl: this.options.baseUrl,
+        },
+        host: host ?? '127.0.0.1',
+        port,
+        publicUrl,
+        trustedProxies,
+        corsOrigin: process.env.OUTLOOK_MCP_CORS_ORIGIN,
+        logger,
+        // OBS-04 (2026-08-02) : correlation id — echoed via `X-Request-Id`
+        // and propagated through AsyncLocalStorage so `auditLog()` and the
+        // winston request_id format read the same value for every event
+        // emitted during one HTTP request.
+        requestIdMiddleware: createRequestIdMiddleware(),
+        // OBS-02 (2026-08-02) : wrap the AAD token-exchange calls so both
+        // `authorization_code` and `refresh_token` grants emit an
+        // `oauth.token.request` / `oauth.token.reject` audit line. The
+        // wrapper is defined in oauth-provider.ts so http-app.ts stays
+        // audit-agnostic ; server.ts is the composition root that decides
+        // "production wiring gets audited".
+        exchangeCode: withTokenExchangeAudit(exchangeCodeForToken),
+        refreshToken: withTokenExchangeAudit(refreshAccessToken),
       });
 
       if (host) {

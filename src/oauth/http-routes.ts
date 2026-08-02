@@ -23,6 +23,7 @@ import { validateRedirectUri } from './redirect-uri.js';
 import { intersectScopes, parseScope, serializeScope } from './scope.js';
 import { allRegisteredScopes, META_SCOPES } from './registered-clients.js';
 import { getCloudEndpoints, type CloudType } from '../cloud-config.js';
+import { auditLog } from '../security/audit-logger.js';
 
 export interface RegisterHandlerDeps {
   /** Static allowlist of acceptable redirect_uris (e.g. Claude.ai callbacks). */
@@ -36,12 +37,30 @@ export interface RegisterHandlerDeps {
 export function createRegisterHandler(deps: RegisterHandlerDeps): RequestHandler {
   const { allowedRedirectUris, logger, now = Date.now } = deps;
   return (req: Request, res: Response) => {
+    // OBS-02 (2026-08-02) : capture handler wall time so operators can spot
+    // slow /register calls in the audit stream. Started at handler entry so
+    // both success and reject paths report a comparable duration.
+    const started = now();
     const body = (req.body ?? {}) as Record<string, unknown>;
     const requested: unknown = body.redirect_uris;
     if (!Array.isArray(requested) || requested.length === 0) {
       res.status(400).json({
         error: 'invalid_redirect_uri',
         error_description: 'redirect_uris is required and must be a non-empty array',
+      });
+      // OBS-02 : audit the reject. `scopes=[]` because /register has no
+      // scope context ; `account=null` because no identity has been
+      // established yet. `redirect_uris` values are DELIBERATELY not
+      // propagated into the audit event — the emission-site contract in
+      // docs/AUDIT_EVENTS.md forbids it.
+      auditLog({
+        tool: 'oauth.client.register',
+        method: 'POST',
+        path: '/register',
+        scopes: [],
+        account: null,
+        status: 400,
+        duration_ms: now() - started,
       });
       return;
     }
@@ -57,6 +76,15 @@ export function createRegisterHandler(deps: RegisterHandlerDeps): RequestHandler
         error: 'invalid_redirect_uri',
         error_description:
           'one or more redirect_uris are not in the registered-clients allowlist',
+      });
+      auditLog({
+        tool: 'oauth.client.register',
+        method: 'POST',
+        path: '/register',
+        scopes: [],
+        account: null,
+        status: 400,
+        duration_ms: now() - started,
       });
       return;
     }
@@ -76,6 +104,15 @@ export function createRegisterHandler(deps: RegisterHandlerDeps): RequestHandler
       response_types: body.response_types ?? ['code'],
       token_endpoint_auth_method: body.token_endpoint_auth_method ?? 'none',
       client_name: body.client_name ?? 'MCP Client',
+    });
+    auditLog({
+      tool: 'oauth.client.register',
+      method: 'POST',
+      path: '/register',
+      scopes: [],
+      account: null,
+      status: 201,
+      duration_ms: now() - started,
     });
   };
 }
@@ -201,6 +238,18 @@ export function createRejectPostAuthorizeHandler(
       .send(
         'method_not_allowed: /authorize accepts GET only. POST bypasses required PKCE+scope validation.'
       );
+    // OBS-02 : 405 rejections are worth auditing — a client hammering POST
+    // /authorize is either a misconfigured integration or an adversary
+    // probing for the SDK bypass path that N4-B2 closed.
+    auditLog({
+      tool: 'oauth.authorize.reject',
+      method: 'POST',
+      path: '/authorize',
+      scopes: [],
+      account: null,
+      status: 405,
+      duration_ms: 0,
+    });
   };
 }
 
@@ -262,7 +311,25 @@ export function createAuthorizeHandler(deps: AuthorizeHandlerDeps): RequestHandl
     generateServerCodeVerifier = () => crypto.randomBytes(32).toString('base64url'),
   } = deps;
 
+  // OBS-02 : shared audit-emitter for reject paths — factored so all six
+  // reject branches emit identical field shapes. `scopes` deliberately stays
+  // `[]` because reject events fire before the effective-scope intersection
+  // runs (or, for the empty-scope case, when the intersection is provably
+  // empty and there is nothing meaningful to advertise).
+  const auditReject = (status: number, durationMs: number): void => {
+    auditLog({
+      tool: 'oauth.authorize.reject',
+      method: 'GET',
+      path: '/authorize',
+      scopes: [],
+      account: null,
+      status,
+      duration_ms: durationMs,
+    });
+  };
+
   return (req: Request, res: Response) => {
+    const started = now();
     const url = new URL(req.url, `${req.protocol}://${req.get('host') ?? 'localhost'}`);
     const tenantId = secrets.tenantId || 'common';
     const clientId = secrets.clientId;
@@ -290,6 +357,7 @@ export function createAuthorizeHandler(deps: AuthorizeHandlerDeps): RequestHandl
             ? 'invalid_request: redirect_uri is required'
             : 'invalid_request: redirect_uri is not in the registered-clients allowlist'
         );
+      auditReject(400, now() - started);
       return;
     }
 
@@ -306,6 +374,7 @@ export function createAuthorizeHandler(deps: AuthorizeHandlerDeps): RequestHandl
         .status(400)
         .type('text/plain')
         .send('invalid_request: code_challenge_method must be S256');
+      auditReject(400, now() - started);
       return;
     }
 
@@ -318,6 +387,7 @@ export function createAuthorizeHandler(deps: AuthorizeHandlerDeps): RequestHandl
         .status(400)
         .type('text/plain')
         .send('invalid_request: state parameter exceeds maximum length');
+      auditReject(400, now() - started);
       return;
     }
 
@@ -329,6 +399,7 @@ export function createAuthorizeHandler(deps: AuthorizeHandlerDeps): RequestHandl
         .status(400)
         .type('text/plain')
         .send('invalid_request: code_challenge is required (PKCE mandatory)');
+      auditReject(400, now() - started);
       return;
     }
 
@@ -366,6 +437,7 @@ export function createAuthorizeHandler(deps: AuthorizeHandlerDeps): RequestHandl
         .status(400)
         .type('text/plain')
         .send('invalid_scope: no requested scope is in the registered/known allowlist');
+      auditReject(400, now() - started);
       return;
     }
 
@@ -407,5 +479,19 @@ export function createAuthorizeHandler(deps: AuthorizeHandlerDeps): RequestHandl
     microsoftAuthUrl.searchParams.set('client_id', clientId);
 
     res.redirect(microsoftAuthUrl.toString());
+    // OBS-02 : audit the successful redirect. `scopes` reflects the effective
+    // intersection that was actually forwarded to AAD — that is the
+    // operator's ground truth for "what did this client just get authorized
+    // for". `account` stays null because we only learn the identity later,
+    // during the /token exchange + /mcp Bearer verify.
+    auditLog({
+      tool: 'oauth.authorize.request',
+      method: 'GET',
+      path: '/authorize',
+      scopes: [...scopeResult.set],
+      account: null,
+      status: 302,
+      duration_ms: now() - started,
+    });
   };
 }

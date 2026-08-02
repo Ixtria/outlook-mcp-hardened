@@ -23,6 +23,8 @@
  *   - Bearer tokens (Authorization-header-style strings)
  *   - JWT-shaped strings (eyJ... prefix, common in OAuth flows)
  *   - Graph API URL-encoded email path segments (e.g. `users/alice@…`)
+ *   - Azure MSAL refresh-token-shaped strings (M.*, 1.A*, AQAB*)
+ *     — OBS-07 / SEC-01 bonus (2026-08-02)
  *
  * What is NOT redacted (kept on purpose for ops debuggability) :
  *   - Tool names, HTTP methods, status codes
@@ -32,6 +34,13 @@
  * Performance : the redactor is a hot path (every log line). The
  * pre-compiled regexes are intentionally simple/anchored to minimize
  * backtracking. We measured <50µs per log line on Node 20 / 32-char input.
+ *
+ * OBS-03 extension (2026-08-02) : `redactSensitiveDeep` walks arbitrary
+ * nested structures (objects, arrays, Error) and redacts every string
+ * VALUE it encounters, leaving keys and non-string primitives untouched.
+ * Required because `redactSensitive` was only reaching `info.message` in
+ * the winston pipeline — splat args, meta objects, error stacks were
+ * bypassing redaction.
  */
 
 import { hashAccount } from './audit-logger.js';
@@ -55,6 +64,44 @@ const JWT_RE = /eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9._-]+/g;
 // above ; this catches the percent-encoded variant.
 const ENCODED_EMAIL_RE = /[A-Za-z0-9._%+-]+%40[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
 
+// Azure MSAL refresh-token-shaped strings. Real MSAL refresh tokens are
+// opaque blobs starting with `M.`, `1.A`, or `AQAB` followed by a long
+// base64url-ish payload. These NEVER contain the `eyJ` JWT prefix so the
+// JWT regex above misses them (SEC-01 finding, 2026-08-02).
+// The `\b` anchor keeps false positives low : we only match at word
+// boundaries, so `random.M.foo` is not touched.
+const AZURE_REFRESH_M_RE = /\bM\.[A-Za-z0-9_-][A-Za-z0-9._-]{3,}/g;
+const AZURE_REFRESH_1A_RE = /\b1\.A[A-Za-z0-9._-]{4,}/g;
+const AZURE_REFRESH_AQAB_RE = /\bAQAB[A-Za-z0-9._-]{4,}/g;
+
+/**
+ * Redact PII / secrets from a single string. Pure regex, no I/O beyond
+ * the audit-salt-keyed HMAC on emails. Safe to call on already-redacted
+ * output (idempotent for the JWT / Bearer / refresh-token replacements ;
+ * email replacements re-hash their own `[email:HASH]` marker to itself
+ * because the marker doesn't match `EMAIL_RE`).
+ */
+function redactString(input: string): string {
+  let out = input;
+  out = out.replace(EMAIL_RE, (match) => {
+    const full = hashAccount(match);
+    const hex = full.slice('hmac-sha256:'.length, 'hmac-sha256:'.length + 8);
+    return `[email:${hex}]`;
+  });
+  out = out.replace(ENCODED_EMAIL_RE, (match) => {
+    const decoded = match.replace(/%40/gi, '@');
+    const full = hashAccount(decoded);
+    const hex = full.slice('hmac-sha256:'.length, 'hmac-sha256:'.length + 8);
+    return `[email:${hex}]`;
+  });
+  out = out.replace(JWT_RE, '[JWT redacted]');
+  out = out.replace(BEARER_RE, 'Bearer [redacted]');
+  out = out.replace(AZURE_REFRESH_M_RE, '[refresh redacted]');
+  out = out.replace(AZURE_REFRESH_1A_RE, '[refresh redacted]');
+  out = out.replace(AZURE_REFRESH_AQAB_RE, '[refresh redacted]');
+  return out;
+}
+
 /**
  * Redact PII / secrets from a log message string. Idempotent : re-running
  * on already-redacted output produces the same output.
@@ -64,6 +111,11 @@ const ENCODED_EMAIL_RE = /[A-Za-z0-9._%+-]+%40[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
  * which is fine here because the audit-logger entry carries the full
  * 128-bit HMAC — these short tokens are correlation handles for forensic
  * cross-referencing, not standalone identifiers.
+ *
+ * Non-string inputs are JSON-stringified first (preserved behavior — a
+ * few call sites rely on this). For structure-preserving redaction of
+ * meta/splat/error objects inside the winston pipeline, use
+ * `redactSensitiveDeep` instead.
  */
 export function redactSensitive(text: unknown): string {
   if (typeof text !== 'string') {
@@ -74,21 +126,66 @@ export function redactSensitive(text: unknown): string {
       return '[unserializable]';
     }
   }
-  let out = text as string;
-  out = out.replace(EMAIL_RE, (match) => {
-    // hashAccount returns "hmac-sha256:<32hex>" — keep an 8-hex correlation handle.
-    const full = hashAccount(match);
-    const hex = full.slice('hmac-sha256:'.length, 'hmac-sha256:'.length + 8);
-    return `[email:${hex}]`;
-  });
-  out = out.replace(ENCODED_EMAIL_RE, (match) => {
-    // Percent-decode the @ then hash — same correlation handle as plaintext form.
-    const decoded = match.replace(/%40/gi, '@');
-    const full = hashAccount(decoded);
-    const hex = full.slice('hmac-sha256:'.length, 'hmac-sha256:'.length + 8);
-    return `[email:${hex}]`;
-  });
-  out = out.replace(JWT_RE, '[JWT redacted]');
-  out = out.replace(BEARER_RE, 'Bearer [redacted]');
+  return redactString(text as string);
+}
+
+/**
+ * Recursively redact PII / secrets from an arbitrary value, preserving
+ * structure (arrays stay arrays, plain objects stay plain objects, Error
+ * instances become plain objects with `{ name, message, stack, ...own }`
+ * so the JSON transport can serialize them — the native Error class has
+ * non-enumerable `message`/`stack` which `JSON.stringify` would drop).
+ *
+ * Keys are NEVER touched, only string values. Non-string primitives
+ * (number / boolean / bigint / null / undefined) pass through unchanged.
+ *
+ * Cycle-safe : an object encountered a second time in the same walk is
+ * replaced by the string `'[circular]'`. This matches the winston-friendly
+ * behaviour (json transport already refuses cycles).
+ *
+ * OBS-03 (2026-08-02) : this is what the winston piiRedactFormat calls
+ * on every own enumerable property + on the splat Symbol payload, so that
+ * `logger.info('msg', { deep: { token: 'eyJ…' } })` or
+ * `logger.error('msg', new Error('leaked eyJ…'))` scrub the token before
+ * any transport writes.
+ */
+export function redactSensitiveDeep(value: unknown, seen?: WeakSet<object>): unknown {
+  if (typeof value === 'string') return redactString(value);
+  if (value === null || value === undefined) return value;
+  if (typeof value !== 'object') return value;
+
+  const tracker = seen ?? new WeakSet<object>();
+  if (tracker.has(value as object)) return '[circular]';
+  tracker.add(value as object);
+
+  if (value instanceof Error) {
+    // Copy the standard non-enumerable Error props explicitly, then merge
+    // any user-attached own props (e.g. `err.code = 'ETIMEDOUT'`) after
+    // deep-redaction. Winston's json transport otherwise emits `{}` for
+    // Error values, hiding both leaks AND diagnostic info.
+    const err = value;
+    const redacted: Record<string, unknown> = {
+      name: err.name,
+      message: redactString(err.message ?? ''),
+    };
+    if (typeof err.stack === 'string') {
+      redacted.stack = redactString(err.stack);
+    }
+    for (const key of Object.keys(err)) {
+      if (key === 'name' || key === 'message' || key === 'stack') continue;
+      redacted[key] = redactSensitiveDeep((err as unknown as Record<string, unknown>)[key], tracker);
+    }
+    return redacted;
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((v) => redactSensitiveDeep(v, tracker));
+  }
+
+  const source = value as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(source)) {
+    out[key] = redactSensitiveDeep(source[key], tracker);
+  }
   return out;
 }
