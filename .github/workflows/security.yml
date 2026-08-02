@@ -18,12 +18,20 @@ jobs:
     name: CodeQL (JS/TS SAST)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: github/codeql-action/init@v3
+      # HARDENED: StepSecurity harden-runner in audit mode (observe egress
+      # from GitHub-hosted runners). Switch to `egress-policy: block` with
+      # an explicit allowlist after ~2 weeks of audit logs if Jimmy confirms.
+      # HARDENED (SEC-05): pinned to SHA — floating tag freezes to this commit.
+      - uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: github/codeql-action/init@a2983b8bed1923f44751c5c43237f479442827b3 # v3.37.4
         with:
           languages: javascript-typescript
           queries: security-and-quality
-      - uses: github/codeql-action/analyze@v3
+      - uses: github/codeql-action/analyze@a2983b8bed1923f44751c5c43237f479442827b3 # v3.37.4
         with:
           category: '/language:javascript-typescript'
 
@@ -31,9 +39,19 @@ jobs:
     name: Semgrep (OWASP + TS rulepacks)
     runs-on: ubuntu-latest
     container:
-      image: returntocorp/semgrep:latest
+      # HARDENED (SEC-05): pinned Docker image by sha256 digest.
+      # returntocorp/semgrep:latest resolved 2026-08-02.
+      image: returntocorp/semgrep@sha256:98c2572fced2474539fd27cab3207ebd8e95e4e7aab4c3b381fdc5e2641d9941
     steps:
-      - uses: actions/checkout@v4
+      # HARDENED: StepSecurity harden-runner in audit mode (observe egress
+      # from GitHub-hosted runners). Switch to `egress-policy: block` with
+      # an explicit allowlist after ~2 weeks of audit logs if Jimmy confirms.
+      # HARDENED (SEC-05): pinned to SHA — floating tag freezes to this commit.
+      - uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Semgrep scan
         run: |
           semgrep scan \
@@ -48,7 +66,7 @@ jobs:
             --severity WARNING \
             --metrics off \
             --sarif --output semgrep.sarif || true
-      - uses: github/codeql-action/upload-sarif@v3
+      - uses: github/codeql-action/upload-sarif@a2983b8bed1923f44751c5c43237f479442827b3 # v3.37.4
         if: always()
         with:
           sarif_file: semgrep.sarif
@@ -58,13 +76,21 @@ jobs:
     name: OSV-Scanner (deps vuln scan)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      # HARDENED: StepSecurity harden-runner in audit mode (observe egress
+      # from GitHub-hosted runners). Switch to `egress-policy: block` with
+      # an explicit allowlist after ~2 weeks of audit logs if Jimmy confirms.
+      # HARDENED (SEC-05): pinned to SHA — floating tag freezes to this commit.
+      - uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: 'npm'
       - run: npm ci
-      - uses: google/osv-scanner-action/osv-scanner-action@v2.3.8
+      - uses: google/osv-scanner-action/osv-scanner-action@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
         with:
           scan-args: |-
             --config=osv-scanner.toml
@@ -75,10 +101,21 @@ jobs:
     name: TruffleHog (secret scan)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # HARDENED: StepSecurity harden-runner in audit mode (observe egress
+      # from GitHub-hosted runners). Switch to `egress-policy: block` with
+      # an explicit allowlist after ~2 weeks of audit logs if Jimmy confirms.
+      # HARDENED (SEC-05): pinned to SHA — floating tag freezes to this commit.
+      - uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
-      - uses: trufflesecurity/trufflehog@main
+      # HARDENED (SEC-05): CRITICAL — was pinned to `@main` (mutable branch,
+      # supply-chain risk cf. incidents Trivy récents). Now pinned to SHA of
+      # v3.96.0 release.
+      - uses: trufflesecurity/trufflehog@6f3c981e7b77f235fd2702dd74af25fc4b72bf11 # v3.96.0
         with:
           path: .
           extra_args: --only-verified
@@ -87,8 +124,16 @@ jobs:
     name: License compliance
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      # HARDENED: StepSecurity harden-runner in audit mode (observe egress
+      # from GitHub-hosted runners). Switch to `egress-policy: block` with
+      # an explicit allowlist after ~2 weeks of audit logs if Jimmy confirms.
+      # HARDENED (SEC-05): pinned to SHA — floating tag freezes to this commit.
+      - uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: 'npm'

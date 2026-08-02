@@ -1,0 +1,47 @@
+# HARDENED: auto-merge Dependabot PATCH updates only.
+# Minor/major updates require human review — per contradictoire GPT-5.5
+# (2026-08-02): "minor peut casser du runtime OAuth/sécu".
+#
+# The `--auto` flag on `gh pr merge` waits for required status checks
+# (CI + Security) to pass before merging, so branch protection rules
+# remain the gating authority.
+#
+# ADR reference: docs/adr/0004-discipline-de-maintenance.md
+# Ticket: AUTO-01 (see TICKETS.md)
+
+name: Dependabot auto-merge
+
+on: pull_request_target
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  automerge:
+    # Only Dependabot PRs are eligible. `pull_request_target` runs with the
+    # base repo's token; the `github.actor` check prevents any other actor
+    # from triggering this job via a forked PR.
+    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - id: meta
+        # HARDENED (SEC-05): pinned to SHA — floating tag freezes to this commit.
+        uses: dependabot/fetch-metadata@21025c705c08248db411dc16f3619e6b5f9ea21a # v2.5.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Enable auto-merge (PATCH only)
+        if: steps.meta.outputs.update-type == 'version-update:semver-patch'
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Skip non-patch update (human review required)
+        if: steps.meta.outputs.update-type != 'version-update:semver-patch'
+        env:
+          UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
+        run: |
+          echo "Update type: $UPDATE_TYPE"
+          echo "Skipping auto-merge — minor/major bumps require human review."

@@ -21,9 +21,17 @@ jobs:
     timeout-minutes: 20
 
     steps:
-      - uses: actions/checkout@v4
+      # HARDENED: StepSecurity harden-runner in audit mode (observe egress
+      # from GitHub-hosted runners). Switch to `egress-policy: block` with
+      # an explicit allowlist after ~2 weeks of audit logs if Jimmy confirms.
+      # HARDENED (SEC-05): pinned to SHA — floating tag freezes to this commit.
+      - uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
 
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: 'npm'
@@ -59,7 +67,7 @@ jobs:
         run: cat /tmp/server.log || true
 
       - name: ZAP Baseline Scan
-        uses: zaproxy/action-baseline@v0.14.0
+        uses: zaproxy/action-baseline@7c4deb10e6261301961c86d65d54a516394f9aed # v0.14.0
         with:
           target: 'http://127.0.0.1:3000/.well-known/oauth-authorization-server'
           rules_file_name: '.zap/rules.tsv'
