@@ -1,12 +1,59 @@
 # TICKETS
 
 État après audit stratégique 2026-08-02 + révision post contradictoire GPT-5.5.
+**37/37 tickets du cycle v0.4.0 fermés** (voir CHANGELOG v0.4.0). Ce fichier
+liste désormais les tickets remontés APRÈS release v0.4.0.
 
 Voir :
 - `docs/plans/2026-08-02-audit-maintenance-strategique.md` — audit complet + annexe contradictoire
 - `docs/adr/0004-discipline-de-maintenance.md` — 4 gates non-négociables
 
-**Total : 38 tickets** dont **1 P0 isolé** + 4 lots priorisés (11-16 j homme total).
+---
+
+## 🔴 NOUVEAU post-v0.4.0 — remontée bus agent-hub 2026-08-03
+
+### SOV-01 — Client OAuth par défaut NON souverain (client_id Softeria dans le fork Ixtria)
+
+**Signalé par** : hermes via bus agent-hub (conv `conv-20260803-sovereign-default-client`, msg-id `msg-20260803T100442-from-hermes-sovereign-default-client`).
+
+**Contexte terrain** : Hermes a déployé v0.4.0 sur le mini-server et testé le device-code login sur le compte Outlook perso de Jimmy. Au consentement Microsoft AAD, l'app affichée est **"Softeria AS / MS 365 MCP Server"**, PAS Ixtria. Jimmy a refusé le consent — il veut du souverain.
+
+**Root cause** :
+- `src/cloud-config.ts:50` : `DEFAULT_CLIENT_IDS.global = '084a3e9f-a9f4-43f7-89f9-d229cf97853e'` = **App Registration Softeria** (héritée de l'upstream, jamais remplacée dans le fork)
+- Ce client_id fait référence à une Azure App Registration créée dans le tenant Softeria, tokens émis par Microsoft AAD au nom de cette entité tierce
+- **Contradiction directe** avec la promesse README ligne 17 : *"Not affiliated with Microsoft, Anthropic, or Softeria. Independent project published by Ixtria SA"* — mais on utilise leur App par défaut
+
+**Impact utilisateur** :
+- User qui `npm install -g @ixtria/outlook-mcp-hardened` + `--login` consent à un client third-party sans le savoir explicitement
+- Souveraineté brisée par défaut — raison d'être du fork
+- Un consommateur "security-serious" comme Jimmy refuse et cherche à changer, mais rien dans la doc ne l'y aide au moment du refus
+
+**3 options** :
+
+- **(A) Nouveau default client_id Ixtria** (recommandé) : Jimmy crée une Azure App Registration côté tenant Ixtria (~10 min Azure Portal : App type Public client, redirect URIs = `http://localhost:*` + `https://outlook-mcp.ixtria.xyz/callback`, delegated permissions Mail.Read + Mail.ReadWrite + Mail.Send + Calendars.Read + Calendars.ReadWrite + offline_access + User.Read). Remplace le default dans cloud-config.ts:50. Solution alignée avec la raison d'être du fork.
+
+- **(B) Pas de default, exiger `MS365_MCP_CLIENT_ID` au boot** : safer (aucun tiers par défaut) mais casse l'onboarding zéro-conf pour tous les nouveaux users. Recommandation refusée par contradictoire probable.
+
+- **(C) Warning fort au boot + doc INSTALL** : garde Softeria par défaut mais affiche `⚠️ You are about to consent to a THIRD-PARTY app "Softeria/MS 365 MCP Server". For a sovereign install, register your own Azure App and set MS365_MCP_CLIENT_ID (see INSTALL.md#sovereign-setup)`. Patch minimal, promesse toujours cassée par défaut.
+
+**Recommandation combinée A + C** :
+1. **A immédiat** : Jimmy crée l'App Ixtria (~10 min Azure Portal, action manuelle requise — ne peut pas être scripté sans Jimmy admin Azure)
+2. **C en filet** : warning au boot + section INSTALL "Sovereign setup" pour tous les users qui veulent leur propre App
+
+**Action Jimmy requise** :
+- Azure Portal → tenant Ixtria → App Registrations → New → "Ixtria Outlook MCP" (Public client, Multi-tenant si on veut supporter compte perso Microsoft en plus des tenants pro)
+- Copier le nouveau `Application (client) ID`
+- Le donner à ce projet pour remplacement dans cloud-config.ts
+
+**Effort code** :
+- Option A seule : 5 min (1 constante changée) + test smoke
+- Option A+C : ~30 min (constante + warning + doc INSTALL)
+
+**Bloque** : la promesse OSS "sovereign / Ixtria-owned". Priorité 🔴 URGENT à traiter en v0.4.1 ou v0.5.
+
+**GitHub Issue** : à créer + linker au retour de Jimmy pour l'App Registration.
+
+---
 
 Historique v0.2.0 Lots B/C/D/E dans `git log` (pas remis ici — reprise stratégique post 6 semaines de silence).
 
@@ -36,8 +83,9 @@ Refermer les mensonges frontaux + purger le backlog + débloquer la CI.
 | **SEC-03** | 🔴 Security CI cron rouge 5 semaines — ajouter `--experimental-fail-severity=high` à osv-scanner + merger Dependabot hono + fast-uri (2 HIGH prod) | 15 min |
 | **OBS-01** | 🔴 Winston File transport sans rotation → disque plein garanti (maxsize + maxFiles) | 15 min |
 | **DOC-URGENT** | 🔴 **Retirer 3 claims mensongères du README** : badge "0 vulns", "CI blocks phone-home", "audit trail per Graph call" (laisse croire à OAuth). Harmoniser systemd score contradictoire 1.5 vs 2.5. **Retirer le claim "nFADP-compatible"** du topic GitHub + README + CLAUDE.md tant que `docs/COMPLIANCE-nFADP.md` n'existe pas (contradictoire GPT-5.5 : "faux claim frontal, pas un trou"). | 30 min |
+| **AUTH-01** | 🔴 **Client OAuth par défaut non-souverain.** `DEFAULT_CLIENT_IDS.global` (`src/cloud-config.ts:50`) pointe sur l'app registration Softeria (`084a3e9f-a9f4-43f7-89f9-d229cf97853e`). Au device-code login Microsoft, l'écran de consentement affiche **"Softeria AS / MS 365 MCP Server"**, pas Ixtria — contredit frontalement la promesse de souveraineté du fork (retour terrain Jimmy, incident `conv-20260803-sovereign-default-client`). Fix recommandé : enregistrer une app registration Azure AD propre à Ixtria (public client, multi-tenant, device code flow) et en faire le défaut de `DEFAULT_CLIENT_IDS.global` ; documenter `--client-id` pour BYO app en alternative. **Prérequis hors code** : création de l'app registration nécessite un accès Azure AD/Entra côté Jimmy (tenant Ixtria) — bloquant tant que ce n'est pas fait. | 2-3 h (+ dépendance Azure côté Jimmy) |
 
-**Sortie Lot 1** : CI verte, mensonges retirés, backlog Dependabot HIGH prod purgé.
+**Sortie Lot 1** : CI verte, mensonges retirés, backlog Dependabot HIGH prod purgé, client OAuth par défaut souverain (ou warning explicite en attendant).
 
 ---
 
@@ -126,7 +174,7 @@ Les BLOCKERS ne peuvent plus régresser silencieusement (Règle 3 ADR-0004).
 
 ## Récapitulatif
 
-- **Total** : 38 tickets ouverts (1 P0 isolé + 37 en 5 lots)
+- **Total** : 39 tickets ouverts (1 P0 isolé + 38 en 5 lots)
 - **Effort total** : 11-16 j homme
 - **Bloquant absolu** : **SEC-01-P0** (1 h) — refresh token en clair est un leak credential réel
 - **Bloquant crédibilité** : Lot 1 (½ j) — retirer mensonges frontaux + purger backlog
