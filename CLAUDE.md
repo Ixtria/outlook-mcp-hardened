@@ -130,6 +130,11 @@ Les autres outils PF (starters, production-skills, bootstrap) ne s'appliquent pa
 
 ## Ton rôle sur le bus
 
+> ⚠️ **Bus déprécié (2026-08-18, agent-hub#286).** Pour parler à un autre projet Jimmy :
+> lire `~/Projets/agent-hub/config/peers.json` pour choisir le destinataire par rôle/capacités,
+> puis utiliser `ListAgents` + `SendMessage` natifs (les sessions cibles sont déjà chargées).
+> Le protocole ci-dessous ne vaut plus que pour un message bus **entrant** legacy.
+
 **Tu es MCP server Outlook (mail + calendar) hardened.** Tu fournis ton code, tes tests, tes endpoints, ta config client. Tu ne touches PAS l'infra serveur, tu ne gères pas d'autres surfaces M365, tu ne stockes pas de secrets.
 
 | Hors scope / directif | Bonne pratique |
