@@ -5,6 +5,25 @@
 
 set -euo pipefail
 
+# --- Secret scanning (place avant tout early-exit, non contournable par SKIP_PRECOMMIT) ---
+# Ce depot a un core.hooksPath versionne : il n est PAS couvert par le pre-push
+# global du parc (~/.githooks). GitHub secret scanning est indisponible sur un
+# depot prive de compte perso. Ce hook est le SEUL filet.
+echo "🔑 Scanning staged changes for secrets (gitleaks)..." >&2
+if command -v gitleaks >/dev/null 2>&1; then
+  gitleaks protect --staged --redact --verbose || {
+    echo "" >&2
+    echo "❌ Secret detecte dans les fichiers stages — commit bloque." >&2
+    echo "   Retire le secret, puis recommence. Si c est un faux positif," >&2
+    echo "   ajoute une allowlist ciblee dans .gitleaks.toml (jamais --no-verify)." >&2
+    exit 1
+  }
+else
+  echo "❌ gitleaks introuvable — installe-le avant de committer :" >&2
+  echo "   go install github.com/gitleaks/gitleaks/v8@latest" >&2
+  exit 1
+fi
+
 if [[ "${SKIP_PRECOMMIT:-0}" == "1" ]]; then
   echo "⏭️  pre-commit skipped (SKIP_PRECOMMIT=1)" >&2
   exit 0
