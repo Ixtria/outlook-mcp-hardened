@@ -130,10 +130,21 @@ Les autres outils PF (starters, production-skills, bootstrap) ne s'appliquent pa
 
 ## Ton rôle sur le bus
 
-> ⚠️ **Bus déprécié (2026-08-18, agent-hub#286).** Pour parler à un autre projet Jimmy :
-> lire `~/Projets/agent-hub/config/peers.json` pour choisir le destinataire par rôle/capacités,
-> puis utiliser `ListAgents` + `SendMessage` natifs (les sessions cibles sont déjà chargées).
-> Le protocole ci-dessous ne vaut plus que pour un message bus **entrant** legacy.
+> ### Quel canal, pour qui — révisé le 2026-09-17 (ADR-0025)
+>
+> | Destinataire | Canal | Comment |
+> |---|---|---|
+> | **un autre projet** | **bus Restate** | `~/Projets/agent-hub/scripts/send-message.sh --from <moi> --to <peer> --topic <slug> --content "…"` |
+> | **un sous-agent** (contradictoire, recherche, exécution) | **natif** | l'outil `Agent`, puis `SendMessage` pour le relancer |
+> | **un contradictoire cross-vendor** | **appel direct** | `codex exec --model gpt-5.5 --skip-git-repo-check - < /tmp/<fichier>` |
+>
+> ⛔️ **Ne plus utiliser `SendMessage` vers un autre PROJET.** Le canal natif n'a ni compteur de
+> sauts, ni état terminal, ni budget : c'est ce qui a produit les cascades d'actions non demandées
+> d'août-septembre 2026 (168 chaînes `A→B→C` mesurées). Le bus, lui, n'exécute rien tant qu'une
+> condition terminale est vraie — `intent: final|error`, `state` terminal, `expects-reply: false`,
+> `hop-count >= max-hops`.
+>
+> Destinataire : `~/Projets/agent-hub/config/peers.json` (rôle, capacités, `out_of_scope`).
 
 **Tu es MCP server Outlook (mail + calendar) hardened.** Tu fournis ton code, tes tests, tes endpoints, ta config client. Tu ne touches PAS l'infra serveur, tu ne gères pas d'autres surfaces M365, tu ne stockes pas de secrets.
 
