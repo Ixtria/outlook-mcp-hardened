@@ -1,3 +1,5 @@
+@~/Projets/.org-doctrine/doctrine/CLAUDE-organisation.md
+
 # @ixtria/outlook-mcp-hardened
 
 ## Qu'est-ce que c'est ?
