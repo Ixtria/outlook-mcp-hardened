@@ -83,6 +83,56 @@ describe('testLogin probe (#35)', () => {
     expect(new URL(calls[0]!).pathname).toBe('/v1.0/me/calendars');
   });
 
+  it('skips the Graph check instead of failing when no readable scope is requested', async () => {
+    // --enabled-tools '^send-mail$' --enable-send requests Mail.Send only:
+    // probing the inbox would 403 exactly like /me did.
+    const calls = stubGraph(() => new Response('Forbidden', { status: 403 }));
+
+    const result = await makeManager(['Mail.Send']).testLogin();
+
+    expect(result.success).toBe(true);
+    expect(result.message).toContain('not checked');
+    expect(calls).toHaveLength(0);
+  });
+
+  it('probes mailbox settings when they are the only readable scope', async () => {
+    const calls = stubGraph(() => new Response('{}', { status: 200 }));
+
+    const result = await makeManager(['MailboxSettings.Read', 'Mail.Send']).testLogin();
+
+    expect(result.success).toBe(true);
+    expect(new URL(calls[0]!).pathname).toBe('/v1.0/me/mailboxSettings/timeZone');
+  });
+
+  it('reports the account that just logged in, not the previously selected one', async () => {
+    const SECOND = { ...ACCOUNT, homeAccountId: 'second', username: 'second@example.com', name: 'Second' };
+    const manager = new AuthManager(
+      { auth: { clientId: '00000000-0000-0000-0000-000000000000' } },
+      ['Mail.Read']
+    );
+    // ACCOUNT is already selected; the device-code login authenticates SECOND.
+    (manager as unknown as { selectedAccountId: string }).selectedAccountId = ACCOUNT.homeAccountId;
+    vi.spyOn(manager, 'getCurrentAccount').mockResolvedValue(ACCOUNT);
+    vi.spyOn(manager, 'saveTokenCache').mockResolvedValue();
+    const msalApp = (manager as unknown as { msalApp: { acquireTokenByDeviceCode: unknown } })
+      .msalApp;
+    vi.spyOn(msalApp as never, 'acquireTokenByDeviceCode').mockResolvedValue({
+      accessToken: 'second-token',
+      account: SECOND,
+      expiresOn: new Date(Date.now() + 3600_000),
+      scopes: ['Mail.Read'],
+    } as never);
+    stubGraph(() => new Response('{"id":"x"}', { status: 200 }));
+
+    await manager.acquireTokenByDeviceCode(() => {});
+    const result = await manager.testLogin();
+
+    expect(result.userData).toEqual({
+      displayName: 'Second',
+      userPrincipalName: 'second@example.com',
+    });
+  });
+
   it('still reports a real Graph failure on the probed resource', async () => {
     stubGraph(() => new Response('Unauthorized', { status: 401 }));
 
