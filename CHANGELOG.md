@@ -6,6 +6,16 @@ Versionning : [SemVer](https://semver.org/lang/fr/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-22
+
+### Security
+
+- SOV-01 (#18) : le client OAuth par défaut (`DEFAULT_CLIENT_IDS.global`) est désormais l'app registration Ixtria « Ixtria Outlook MCP » (`bfe24719-6803-4c88-be5e-acfd18655a54`, comptes pro et perso), et non plus celle de Softeria héritée de l'upstream. L'écran de consentement Microsoft affiche Ixtria.
+
+### Upgrade
+
+- Les jetons déjà en cache ont été émis pour l'ancien client : relancer `--login` une fois après la mise à jour. Pour garder l'ancien comportement, définir `MS365_MCP_CLIENT_ID`.
+
 ### Planned v0.5
 
 Reportés depuis "Planned v0.4" (non traités dans le cycle de remédiation 2026-08-02) :

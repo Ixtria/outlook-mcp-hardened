@@ -47,7 +47,8 @@ export const CLOUD_ENDPOINTS: Record<CloudType, CloudEndpoints> = {
  * These are pre-registered public client applications.
  */
 export const DEFAULT_CLIENT_IDS: Record<CloudType, string> = {
-  global: '084a3e9f-a9f4-43f7-89f9-d229cf97853e',
+  // HARDENED: app registration Ixtria « Ixtria Outlook MCP » (tenant Ixtria, comptes pro et perso), remplace celle de Softeria (SOV-01)
+  global: 'bfe24719-6803-4c88-be5e-acfd18655a54',
   china: 'f3e61a6e-bc26-4281-8588-2c7359a02141',
 };
 
