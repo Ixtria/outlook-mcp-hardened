@@ -14,6 +14,8 @@ Voir :
 
 ### SOV-01 — Client OAuth par défaut NON souverain (client_id Softeria dans le fork Ixtria)
 
+**Statut** : ✅ corrigé en v0.4.1 (2026-10-22) — app registration Ixtria `bfe24719-6803-4c88-be5e-acfd18655a54` créée dans le tenant Ixtria, devenue le défaut.
+
 **Signalé par** : hermes via bus agent-hub (conv `conv-20260803-sovereign-default-client`, msg-id `msg-20260803T100442-from-hermes-sovereign-default-client`).
 
 **Contexte terrain** : Hermes a déployé v0.4.0 sur le mini-server et testé le device-code login sur le compte Outlook perso de Jimmy. Au consentement Microsoft AAD, l'app affichée est **"Softeria AS / MS 365 MCP Server"**, PAS Ixtria. Jimmy a refusé le consent — il veut du souverain.

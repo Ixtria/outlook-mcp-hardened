@@ -19,6 +19,16 @@ Reportés depuis "Planned v0.4" (non traités dans le cycle de remédiation 2026
 Nouveaux :
 - SUP-01-PROV : activer `npm publish --provenance` post OIDC trusted publishing configuré côté npm (workflow `publish.yml` dormant préparé)
 
+## [0.4.1] - 2026-10-22
+
+### Security
+
+- SOV-01 (#18) : le client OAuth par défaut (`DEFAULT_CLIENT_IDS.global`) est désormais l'app registration Ixtria « Ixtria Outlook MCP » (`bfe24719-6803-4c88-be5e-acfd18655a54`, comptes pro et perso), et non plus celle de Softeria héritée de l'upstream. L'écran de consentement Microsoft affiche Ixtria.
+
+### Upgrade
+
+- Les jetons déjà en cache ont été émis pour l'ancien client : lancer `--logout` puis `--login` une fois après la mise à jour (`--logout` purge aussi les refresh tokens de l'ancien client). Pour garder l'ancien comportement, définir `MS365_MCP_CLIENT_ID`.
+
 ## [0.4.0] — 2026-08-02 — remédiation post-audit stratégique
 
 ### Added — Phase C HTTP-public deployment kit (mergé 2026-06-02, jamais release)

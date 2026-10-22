@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Relais vers le scanner de secrets central. NE PAS modifier ici : la logique vit
+# dans ~/.githooks/pre-push, un seul fichier pour tous les dépôts.
+#
+# Pourquoi un relais et pas une copie : 42 copies divergent, et le correctif du
+# 2026-08-19 — un secret passait au premier push d'une branche — aurait dû être
+# appliqué 42 fois au lieu d'une.
+#
+# ÉCHOUE FERMÉ si la cible manque. Une copie périmée passe tous les tests de
+# présence et se tait ; un relais cassé, lui, doit se voir. C'est le seul mode de
+# défaillance acceptable pour un garde-fou : bruyant.
+CENTRAL="$HOME/.githooks/pre-push"
+if [ ! -x "$CENTRAL" ]; then
+  echo "✋ push bloqué — scanner de secrets introuvable : $CENTRAL" >&2
+  echo "   Le garde-fou a disparu. Le restaurer, ou assumer : git push --no-verify" >&2
+  exit 1
+fi
+exec "$CENTRAL" "$@"
