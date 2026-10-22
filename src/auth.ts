@@ -225,6 +225,21 @@ function buildScopesFromEndpoints(
   return scopes;
 }
 
+// HARDENED (#35): Graph path used by testLogin(), chosen among the requested
+// scopes so the check never depends on User.Read.
+function getLoginProbePath(scopes: string[]): string {
+  if (scopes.some((s) => s.startsWith('Mail.'))) {
+    return '/v1.0/me/mailFolders/inbox?$select=id';
+  }
+  if (scopes.some((s) => s.startsWith('Calendars.'))) {
+    return '/v1.0/me/calendars?$top=1&$select=id';
+  }
+  if (scopes.some((s) => s.startsWith('MailboxSettings.'))) {
+    return '/v1.0/me/mailboxSettings/timeZone';
+  }
+  return '/v1.0/me';
+}
+
 interface LoginTestResult {
   success: boolean;
   message: string;
@@ -569,21 +584,25 @@ class AuthManager {
       try {
         const secrets = await getSecrets();
         const cloudEndpoints = getCloudEndpoints(secrets.cloudType);
-        const response = await fetch(`${cloudEndpoints.graphApi}/v1.0/me`, {
+        // HARDENED (#35): /v1.0/me needs User.Read, which is never requested →
+        // false 403. Probe a resource covered by the requested scopes instead
+        // and take the identity from the MSAL account (id token claims).
+        const probeUrl = `${cloudEndpoints.graphApi}${getLoginProbePath(this.scopes)}`;
+        const response = await fetch(probeUrl, {
           headers: {
             Authorization: `Bearer ${token}`,
           },
         });
 
         if (response.ok) {
-          const userData = await response.json();
-          logger.info('Graph API user data fetch successful');
+          const account = await this.getCurrentAccount();
+          logger.info('Graph API access check successful');
           return {
             success: true,
             message: 'Login successful',
             userData: {
-              displayName: userData.displayName,
-              userPrincipalName: userData.userPrincipalName,
+              displayName: account?.name ?? '',
+              userPrincipalName: account?.username ?? '',
             },
           };
         } else {
