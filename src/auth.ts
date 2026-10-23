@@ -225,6 +225,20 @@ function buildScopesFromEndpoints(
   return scopes;
 }
 
+// HARDENED (#35): Graph path used by testLogin(), chosen among the requested
+// *readable* scopes so the check never depends on User.Read. Null when no
+// requested scope can read anything (e.g. Mail.Send alone): nothing to probe.
+const LOGIN_PROBES: Array<[RegExp, string]> = [
+  [/^Mail\.(Read|ReadBasic|ReadWrite)(\.Shared)?$/, '/v1.0/me/mailFolders/inbox?$select=id'],
+  [/^Calendars\.(Read|ReadBasic|ReadWrite)(\.Shared)?$/, '/v1.0/me/calendars?$top=1&$select=id'],
+  [/^MailboxSettings\.(Read|ReadWrite)$/, '/v1.0/me/mailboxSettings/timeZone'],
+];
+
+function getLoginProbePath(scopes: string[]): string | null {
+  const probe = LOGIN_PROBES.find(([pattern]) => scopes.some((s) => pattern.test(s)));
+  return probe ? probe[1] : null;
+}
+
 interface LoginTestResult {
   success: boolean;
   message: string;
@@ -243,6 +257,9 @@ class AuthManager {
   private oauthToken: string | null;
   private isOAuthMode: boolean;
   private selectedAccountId: string | null;
+  // HARDENED (#35): account the cached accessToken belongs to (may differ from
+  // the selected account right after a --login on a second account).
+  private tokenAccount: AccountInfo | null = null;
   private useInteractiveAuth: boolean;
 
   constructor(config: Configuration, scopes: string[] = buildScopesFromEndpoints()) {
@@ -425,6 +442,7 @@ class AuthManager {
       try {
         const response = await this.msalApp.acquireTokenSilent(silentRequest);
         this.accessToken = response.accessToken;
+        this.tokenAccount = currentAccount; // HARDENED (#35)
         this.tokenExpiry = response.expiresOn ? new Date(response.expiresOn).getTime() : null;
         await this.saveTokenCache();
         return this.accessToken;
@@ -484,6 +502,7 @@ class AuthManager {
       logger.info(`Granted scopes: ${response?.scopes?.join(', ') || 'none'}`);
       logger.info('Device code login successful');
       this.accessToken = response?.accessToken || null;
+      this.tokenAccount = response?.account ?? null; // HARDENED (#35)
       this.tokenExpiry = response?.expiresOn ? new Date(response.expiresOn).getTime() : null;
 
       // Set the newly authenticated account as selected if no account is currently selected
@@ -534,6 +553,7 @@ class AuthManager {
       logger.info(`Granted scopes: ${response?.scopes?.join(', ') || 'none'}`);
       logger.info('Interactive browser login successful');
       this.accessToken = response?.accessToken || null;
+      this.tokenAccount = response?.account ?? null; // HARDENED (#35)
       this.tokenExpiry = response?.expiresOn ? new Date(response.expiresOn).getTime() : null;
 
       // Set the newly authenticated account as selected if no account is currently selected
@@ -569,26 +589,39 @@ class AuthManager {
       try {
         const secrets = await getSecrets();
         const cloudEndpoints = getCloudEndpoints(secrets.cloudType);
-        const response = await fetch(`${cloudEndpoints.graphApi}/v1.0/me`, {
+        // HARDENED (#35): /v1.0/me needs User.Read, which is never requested →
+        // false 403. Probe a resource covered by the requested scopes instead
+        // and take the identity from the MSAL account the token belongs to.
+        const account = this.tokenAccount ?? (await this.getCurrentAccount());
+        const userData = {
+          displayName: account?.name ?? '',
+          userPrincipalName: account?.username ?? '',
+        };
+        const probePath = getLoginProbePath(this.scopes);
+        if (!probePath) {
+          logger.info('No readable scope requested, Graph API access not checked');
+          return {
+            success: true,
+            message: 'Login successful (Graph API access not checked: no readable scope)',
+            userData,
+          };
+        }
+        const response = await fetch(`${cloudEndpoints.graphApi}${probePath}`, {
           headers: {
             Authorization: `Bearer ${token}`,
           },
         });
 
         if (response.ok) {
-          const userData = await response.json();
-          logger.info('Graph API user data fetch successful');
+          logger.info('Graph API access check successful');
           return {
             success: true,
             message: 'Login successful',
-            userData: {
-              displayName: userData.displayName,
-              userPrincipalName: userData.userPrincipalName,
-            },
+            userData,
           };
         } else {
           const errorText = await response.text();
-          logger.error(`Graph API user data fetch failed: ${response.status} - ${errorText}`);
+          logger.error(`Graph API access check failed: ${response.status} - ${errorText}`);
           return {
             success: false,
             message: `Login successful but Graph API access failed: ${response.status}`,
